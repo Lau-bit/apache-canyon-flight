@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Apache Canyon Flight — Base A to Base B</title>
+<link rel="stylesheet" href="style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">
+  <div class="hud-title">AH-64 · TAC FLIGHT</div>
+  <div class="hud-row"><span class="hud-key">AIRSPEED</span><span class="hud-val" id="hud-speed">0</span><span class="hud-unit">kt</span></div>
+  <div class="hud-row"><span class="hud-key">ALT AGL</span><span class="hud-val" id="hud-alt">0</span><span class="hud-unit">ft</span></div>
+  <div class="hud-row"><span class="hud-key">HEADING</span><span class="hud-val" id="hud-hdg">000</span><span class="hud-unit">deg</span></div>
+  <div class="hud-row"><span class="hud-key">RANGE</span><span class="hud-val" id="hud-range">0.0</span><span class="hud-unit">nm</span></div>
+  <div id="phase">STANDBY</div>
+</div>
+
+<div id="route">
+  <div class="route-ends"><span id="route-a">BASE A</span><span id="route-b">BASE B</span></div>
+  <div class="route-bar">
+    <div class="route-fill" id="route-fill"></div>
+    <div class="route-heli" id="route-heli"></div>
+  </div>
+</div>
+
+<div id="reticle"></div>
+
+<div id="menu">
+  <button id="menu-button" type="button" aria-label="Flight options" aria-expanded="false">Menu</button>
+  <div id="menu-panel" hidden>
+    <fieldset>
+      <legend>Camera</legend>
+      <label>
+        <input type="radio" name="camera-mode" value="chase" checked>
+        1 Chase cam
+      </label>
+      <label>
+        <input type="radio" name="camera-mode" value="cockpit">
+        2 Cockpit
+      </label>
+      <label>
+        <input type="radio" name="camera-mode" value="orbit">
+        3 Free orbit
+      </label>
+      <label>
+        <input type="radio" name="camera-mode" value="cinematic">
+        4 Cinematic flyby
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Flight</legend>
+      <label class="select-label" for="route-select">
+        <span>Time of day</span>
+        <select id="route-select" name="time-of-day">
+          <option value="noon">Harsh noon</option>
+          <option value="golden">Golden hour</option>
+          <option value="dawn">Cold dawn</option>
+        </select>
+      </label>
+      <label class="range-label" for="cruise-speed">
+        <span>Cruise speed <output id="cruise-speed-value" for="cruise-speed">28</output></span>
+        <input id="cruise-speed" type="range" min="6" max="60" step="1" value="28">
+      </label>
+      <label>
+        <input id="auto-loop" type="checkbox" name="auto-loop" checked>
+        Loop A ⇄ B
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Rendering</legend>
+      <label class="select-label" for="frame-rate-select">
+        <span>Frame rate</span>
+        <select id="frame-rate-select" name="frame-rate">
+          <option value="60">60 fps cap</option>
+          <option value="native">Native display</option>
+          <option value="30">30 fps cap</option>
+        </select>
+      </label>
+      <label class="select-label" for="scene-detail-select">
+        <span>Scene detail</span>
+        <select id="scene-detail-select" name="scene-detail">
+          <option value="high">High</option>
+          <option value="balanced">Balanced</option>
+          <option value="performance">Performance</option>
+        </select>
+      </label>
+      <label class="select-label" for="shadow-quality-select">
+        <span>Shadow quality</span>
+        <select id="shadow-quality-select" name="shadow-quality">
+          <option value="high">High</option>
+          <option value="balanced">Balanced</option>
+          <option value="performance">Performance</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <label>
+        <input id="performance-mode" type="checkbox" name="performance-mode">
+        Performance mode
+      </label>
+      <label>
+        <input id="renderer-stats" type="checkbox" name="renderer-stats">
+        Renderer stats
+      </label>
+    </fieldset>
+    <div class="menu-help">
+      1/2/3/4 switch cameras<br>
+      Drag / scroll to rotate any view<br>
+      C recenters the camera<br>
+      Arrows pan in orbit<br>
+      Shift+Q hides UI
+    </div>
+  </div>
+</div>
+
+<script type="module" src="main.js"></script>
+</body>
+</html>
