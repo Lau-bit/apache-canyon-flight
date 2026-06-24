@@ -546,6 +546,9 @@ const padTransitionPhases = new Set(['DEPART', 'LAND']);
 const orbitOffset = new THREE.Vector3(-24, 13, 28);
 const chaseDefaultRadius = 17.3;
 const chaseDefaultPhi = 1.18; // ~22 deg above the horizon
+const chaseTurnLookahead = 0.16; // subtle yaw preview while hand-flying
+const chaseTurnExtraLeadMax = 0.18;
+const chaseTurnExtraLeadRate = 0.55;
 const followTarget = new THREE.Vector3();
 const desiredCamPos = new THREE.Vector3();
 const camHeading = new THREE.Vector3();
@@ -558,6 +561,8 @@ const offsetVec = new THREE.Vector3();
 
 let interacting = false; // a mouse button / wheel drag is active
 let recenter = true;
+let chaseTurnExtraLead = 0;
+let lastChaseYawInput = 0;
 
 function shortestAngleTo(from, to) {
   let d = (to - from) % (Math.PI * 2);
@@ -601,7 +606,22 @@ function updateChase(dt) {
   camera.position.add(camDelta);
   controls.target.copy(followTarget);
 
-  const behindTheta = Math.atan2(-camHeading.x, -camHeading.z);
+  const yawInput = manualControl
+    ? (flightKeys.has('arrowleft') ? 1 : 0) - (flightKeys.has('arrowright') ? 1 : 0)
+    : 0;
+  if (yawInput && yawInput === lastChaseYawInput) {
+    chaseTurnExtraLead = Math.min(chaseTurnExtraLeadMax, chaseTurnExtraLead + chaseTurnExtraLeadRate * dt);
+  } else {
+    chaseTurnExtraLead = 0;
+  }
+  lastChaseYawInput = yawInput;
+
+  const chaseYaw = yawInput
+    ? helicopter.yaw + yawInput * (chaseTurnLookahead + chaseTurnExtraLead) + helicopter.yawVel * 0.1
+    : helicopter.yaw;
+  const behindTheta = yawInput
+    ? Math.atan2(-Math.sin(chaseYaw), -Math.cos(chaseYaw))
+    : Math.atan2(-camHeading.x, -camHeading.z);
   offsetVec.copy(camera.position).sub(controls.target);
   sph.setFromVector3(offsetVec);
 
@@ -613,8 +633,9 @@ function updateChase(dt) {
       && Math.abs(sph.phi - chaseDefaultPhi) < 0.02
       && Math.abs(shortestAngleTo(sph.theta, behindTheta)) < 0.02) recenter = false;
   } else if (!interacting) {
-    // Ease only the azimuth back to behind; keep the user's zoom & tilt.
-    sph.theta = dampAngle(sph.theta, behindTheta, 2.2, dt);
+    // Lead the nose slightly on arrow-yaw. Holding the turn adds a little more
+    // lead slowly, so the view anticipates sustained turns without snapping.
+    sph.theta = dampAngle(sph.theta, behindTheta, yawInput ? 5 : 2.2, dt);
   }
   sph.makeSafe();
   offsetVec.setFromSpherical(sph);
