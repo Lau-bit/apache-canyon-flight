@@ -224,6 +224,28 @@ canvas { display: block; }
   line-height: 1.5;
 }
 
+.menu-help-flight {
+  display: none;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(120, 200, 140, 0.18);
+}
+body.manual-control .menu-help-flight { display: block; }
+.menu-help-flight strong { color: #a7d8b4; }
+
+.tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(216, 178, 58, 0.18);
+  color: #d8b23a;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
 #renderer-stats-panel {
   position: fixed;
   right: 14px;

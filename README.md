@@ -4,6 +4,7 @@ A real-time 3D flight visualization of an AH-64 Apache running a tactical route 
 
 ## Features
 
+- Two selectable scenes: the procedural **Canyon corridor** and a wide, near-flat **Open plains** with its own ground texture, base layout, and cooler lighting (Menu → Flight → Scene)
 - Procedural canyon terrain and helipads (`modules/`)
 - Animated AH-64 helicopter with a flight path between two bases
 - Multiple camera modes: chase, cockpit, free orbit, and cinematic flyby

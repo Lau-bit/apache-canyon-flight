@@ -58,6 +58,14 @@
     </fieldset>
     <fieldset>
       <legend>Flight</legend>
+      <label class="select-label" for="scene-select">
+        <span>Scene</span>
+        <select id="scene-select" name="scene">
+          <option value="canyon">Canyon corridor</option>
+          <option value="plains">Open plains</option>
+          <option value="sea">Open sea</option>
+        </select>
+      </label>
       <label class="select-label" for="route-select">
         <span>Time of day</span>
         <select id="route-select" name="time-of-day">
@@ -73,6 +81,14 @@
       <label>
         <input id="auto-loop" type="checkbox" name="auto-loop" checked>
         Loop A ⇄ B
+      </label>
+      <label>
+        <input id="world-labels" type="checkbox" name="world-labels" checked>
+        Base labels
+      </label>
+      <label>
+        <input id="manual-control" type="checkbox" name="manual-control">
+        Manual flight <span class="tag">experimental</span>
       </label>
     </fieldset>
     <fieldset>
@@ -117,6 +133,13 @@
       C recenters the camera<br>
       Arrows pan in orbit<br>
       Shift+Q hides UI
+      <div class="menu-help-flight" hidden>
+        <strong>Manual flight</strong><br>
+        W / S forward / back<br>
+        ↑ / ↓ climb / descend<br>
+        A / D bank left / right<br>
+        ← / → yaw left / right
+      </div>
     </div>
   </div>
 </div>

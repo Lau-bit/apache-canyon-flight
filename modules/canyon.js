@@ -3,6 +3,10 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { fbm, ridged, makeRng } from './noise.js';
 
 // ---- World extents (the playable canyon corridor runs along +X) ----
+// `xMin..xMax` / `zMin..zMax` is the playable corridor: bases and prop scatter
+// live here. The detailed ground mesh itself reaches much further out
+// (`terrain*`) so the hand-off to the low-res back-country happens far away near
+// the fog rather than at the visible canyon rim.
 export const WORLD = {
   xMin: -340,
   xMax: 340,
@@ -10,12 +14,19 @@ export const WORLD = {
   zMax: 180,
   baseAx: -300,
   baseBx: 300,
+  terrainXMin: -560,
+  terrainXMax: 560,
+  terrainZMin: -340,
+  terrainZMax: 340,
 };
 
+// cacti + shrubs (the repeating greenery) are deliberately sparser than the
+// rock scatter; boulder counts are left dense. New formation/ground-prop counts
+// live alongside them.
 const detailPresets = {
-  high: { segX: 420, segZ: 220, boulders: 520, cacti: 340, shrubs: 460 },
-  balanced: { segX: 320, segZ: 168, boulders: 360, cacti: 220, shrubs: 300 },
-  performance: { segX: 224, segZ: 120, boulders: 200, cacti: 120, shrubs: 170 },
+  high: { segX: 520, segZ: 320, boulders: 520, cacti: 227, shrubs: 307, spires: 26, buttes: 18, smallRocks: 420, deadBush: 240 },
+  balanced: { segX: 400, segZ: 248, boulders: 360, cacti: 147, shrubs: 200, spires: 16, buttes: 11, smallRocks: 280, deadBush: 150 },
+  performance: { segX: 288, segZ: 176, boulders: 200, cacti: 80, shrubs: 113, spires: 9, buttes: 6, smallRocks: 170, deadBush: 90 },
 };
 
 function clamp(v, lo, hi) {
@@ -93,6 +104,14 @@ const strata = [
   [0.82, 0.74, 0.62], // bleached rim
 ];
 
+// Strata colour for an arbitrary world point — shared with the surrounding
+// back-country so the far terrain bands match the playable canyon.
+export function terrainColorAt(x, z, worldY, out) {
+  const n = fbm(x * 0.08 + 7, z * 0.08 + 3, 2);
+  strataColor(worldY, canyonFloorY(x), n, out);
+  return out;
+}
+
 function strataColor(worldY, floor, n, out) {
   const rel = clamp((worldY - floor) / 78, 0, 1);
   const band = rel * (strata.length - 1);
@@ -109,8 +128,8 @@ function strataColor(worldY, floor, n, out) {
 }
 
 function buildTerrain(root, preset) {
-  const spanX = WORLD.xMax - WORLD.xMin;
-  const spanZ = WORLD.zMax - WORLD.zMin;
+  const spanX = WORLD.terrainXMax - WORLD.terrainXMin;
+  const spanZ = WORLD.terrainZMax - WORLD.terrainZMin;
   const geometry = new THREE.PlaneGeometry(spanX, spanZ, preset.segX, preset.segZ);
   geometry.rotateX(-Math.PI / 2);
 
@@ -193,6 +212,83 @@ function makeCactusGeometry() {
   return mergeGeometries(parts, false);
 }
 
+// Natural rock formation, built the same way as the boulders: a high-poly
+// icosphere displaced with fbm noise, then shaped vertically into the desired
+// silhouette. `flatten` exponents remap latitude so the wide mid-band can be
+// pushed toward the top/bottom — < 1 gives a flat mesa cap or a broad base,
+// > 1 stretches it into a slender point.
+function makeRockFormation({ detail, height, radius, taper, flattenTop, flattenBottom, strata, lump, seed }) {
+  const geo = new THREE.IcosahedronGeometry(1, detail);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+
+    const f = y < 0 ? flattenBottom : flattenTop;
+    const ys = Math.sign(y) * Math.pow(Math.abs(y), f);
+    const t = (ys + 1) / 2; // 0 at the base, 1 at the top
+
+    // Horizontal profile: taper up the form with thin sedimentary ledges...
+    let prof = 1 - taper * t + strata * Math.sin(t * Math.PI * 6);
+    // ...and the same organic fbm lumpiness as makeBoulderGeometry.
+    prof *= 0.72 + fbm(x * lump + seed, z * lump + y * 1.6 + seed, 3) * 0.56;
+    prof = Math.max(0.05, prof);
+
+    pos.setXYZ(i, x * radius * prof, t * height, z * radius * prof);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// A weathered rock spire / hoodoo — slender, pointed cap, broad foot.
+function makeSpireGeometry() {
+  return makeRockFormation({
+    detail: 3, height: 9, radius: 1.6, taper: 0.68,
+    flattenTop: 1.45, flattenBottom: 0.5, strata: 0.05, lump: 1.7, seed: 11,
+  });
+}
+
+// A broad, flat-topped butte / mesa.
+function makeButteGeometry() {
+  return makeRockFormation({
+    detail: 3, height: 6.2, radius: 4.3, taper: 0.2,
+    flattenTop: 0.5, flattenBottom: 0.5, strata: 0.06, lump: 0.95, seed: 41,
+  });
+}
+
+// A small rounded stone — the same icosphere-and-fbm technique as the boulders,
+// just smaller and flattened.
+function makeSmallRockGeometry() {
+  const geo = new THREE.IcosahedronGeometry(1, 1);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const jitter = 0.7 + fbm(x * 3 + 5, z * 3 + y, 2) * 0.6;
+    pos.setXYZ(i, x * jitter, y * jitter * 0.66, z * jitter);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// A dry desert bush — a low spray of bare twigs.
+function makeDeadBushGeometry() {
+  const parts = [];
+  const n = 7;
+  for (let i = 0; i < n; i++) {
+    const branch = new THREE.CylinderGeometry(0.03, 0.07, 1.3, 4);
+    branch.translate(0, 0.62, 0);
+    branch.rotateZ(0.5 + (i % 3) * 0.16);
+    branch.rotateY((i / n) * Math.PI * 2);
+    parts.push(branch);
+  }
+  const geo = mergeGeometries(parts, false);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 function placeScatter(root, cullables, preset, highShadowObjects) {
   const rng = makeRng(20260618);
   const dummy = new THREE.Object3D();
@@ -200,27 +296,61 @@ function placeScatter(root, cullables, preset, highShadowObjects) {
   const boulderMat = new THREE.MeshStandardMaterial({ color: 0x8a5b41, roughness: 0.95, metalness: 0 });
   const cactusMat = new THREE.MeshStandardMaterial({ color: 0x4f7a43, roughness: 0.85, metalness: 0 });
   const shrubMat = new THREE.MeshStandardMaterial({ color: 0x6e7a42, roughness: 0.92, metalness: 0 });
+  const spireMat = new THREE.MeshStandardMaterial({ color: 0x9c6f4e, roughness: 0.96, metalness: 0 });
+  const butteMat = new THREE.MeshStandardMaterial({ color: 0xa9794f, roughness: 0.96, metalness: 0 });
+  const smallRockMat = new THREE.MeshStandardMaterial({ color: 0x7e6450, roughness: 0.97, metalness: 0 });
+  const deadBushMat = new THREE.MeshStandardMaterial({ color: 0x8a7345, roughness: 0.95, metalness: 0 });
 
-  const boulderGeo = makeBoulderGeometry();
-  const cactusGeo = makeCactusGeometry();
-  const shrubGeo = new THREE.SphereGeometry(1, 6, 4);
+  const boulders = new THREE.InstancedMesh(makeBoulderGeometry(), boulderMat, preset.boulders);
+  const cacti = new THREE.InstancedMesh(makeCactusGeometry(), cactusMat, preset.cacti);
+  const shrubs = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 4), shrubMat, preset.shrubs);
+  const spires = new THREE.InstancedMesh(makeSpireGeometry(), spireMat, preset.spires);
+  const buttes = new THREE.InstancedMesh(makeButteGeometry(), butteMat, preset.buttes);
+  const smallRocks = new THREE.InstancedMesh(makeSmallRockGeometry(), smallRockMat, preset.smallRocks);
+  const deadBush = new THREE.InstancedMesh(makeDeadBushGeometry(), deadBushMat, preset.deadBush);
 
-  const boulders = new THREE.InstancedMesh(boulderGeo, boulderMat, preset.boulders);
-  const cacti = new THREE.InstancedMesh(cactusGeo, cactusMat, preset.cacti);
-  const shrubs = new THREE.InstancedMesh(shrubGeo, shrubMat, preset.shrubs);
   boulders.castShadow = true;
   boulders.receiveShadow = true;
   cacti.castShadow = true;
   shrubs.castShadow = false;
   shrubs.receiveShadow = true;
+  spires.castShadow = true;
+  spires.receiveShadow = true;
+  buttes.castShadow = true;
+  buttes.receiveShadow = true;
+  smallRocks.castShadow = false;
+  smallRocks.receiveShadow = true;
+  deadBush.castShadow = false;
+  deadBush.receiveShadow = false;
+
+  // Keep props off the helipads and out of the immediate base yard.
+  const baseCenters = [
+    { x: WORLD.baseAx, z: canyonCenterZ(WORLD.baseAx) },
+    { x: WORLD.baseBx, z: canyonCenterZ(WORLD.baseBx) },
+  ];
+  function nearBase(x, z, r) {
+    for (const b of baseCenters) {
+      const dx = x - b.x;
+      const dz = z - b.z;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  }
 
   let bi = 0;
   let ci = 0;
   let si = 0;
+  let pi = 0;
+  let ti = 0;
+  let ri = 0;
+  let di = 0;
   const spanX = WORLD.xMax - WORLD.xMin;
   let guard = 0;
+  const filled = () =>
+    bi >= preset.boulders && ci >= preset.cacti && si >= preset.shrubs &&
+    pi >= preset.spires && ti >= preset.buttes && ri >= preset.smallRocks && di >= preset.deadBush;
 
-  while ((bi < preset.boulders || ci < preset.cacti || si < preset.shrubs) && guard < 200000) {
+  while (!filled() && guard < 300000) {
     guard++;
     const x = WORLD.xMin + 20 + rng() * (spanX - 40);
     const cz = canyonCenterZ(x);
@@ -230,44 +360,83 @@ function placeScatter(root, cullables, preset, highShadowObjects) {
     const h = terrainHeight(x, z);
     // Estimate slope so nothing floats off a cliff face.
     const slope = Math.abs(h - terrainHeight(x + 2, z)) + Math.abs(h - terrainHeight(x, z + 2));
+    const onPad = nearBase(x, z, 18); // the platform itself
+    const inBaseYard = nearBase(x, z, 30); // the cleared apron around it
 
     if (d < hw) {
-      // Canyon floor → cacti and scrub.
-      if (ci < preset.cacti && rng() < 0.4 && slope < 2.2) {
+      // Canyon floor → cacti, scrub, dry bushes, loose stones.
+      if (ci < preset.cacti && !inBaseYard && rng() < 0.4 && slope < 2.2) {
         dummy.position.set(x, h - 0.2, z);
         dummy.rotation.set(0, rng() * Math.PI * 2, 0);
         const s = 0.6 + rng() * 0.9;
         dummy.scale.set(s, s * (0.85 + rng() * 0.4), s);
         dummy.updateMatrix();
         cacti.setMatrixAt(ci++, dummy.matrix);
-      } else if (si < preset.shrubs && slope < 2.6) {
+      } else if (di < preset.deadBush && !inBaseYard && rng() < 0.5 && slope < 2.4) {
+        dummy.position.set(x, h - 0.05, z);
+        dummy.rotation.set(0, rng() * Math.PI * 2, 0);
+        const s = 0.5 + rng() * 0.9;
+        dummy.scale.set(s, s * (0.8 + rng() * 0.5), s);
+        dummy.updateMatrix();
+        deadBush.setMatrixAt(di++, dummy.matrix);
+      } else if (si < preset.shrubs && !inBaseYard && slope < 2.6) {
         dummy.position.set(x, h, z);
         dummy.rotation.set(0, rng() * Math.PI * 2, 0);
         const s = 0.5 + rng() * 1.0;
         dummy.scale.set(s * 1.4, s * 0.5, s * 1.4);
         dummy.updateMatrix();
         shrubs.setMatrixAt(si++, dummy.matrix);
+      } else if (ri < preset.smallRocks && !onPad && slope < 3.0) {
+        dummy.position.set(x, h - 0.15, z);
+        dummy.rotation.set(rng() * Math.PI, rng() * Math.PI * 2, rng() * Math.PI);
+        const s = 0.25 + rng() * rng() * 0.9;
+        dummy.scale.set(s, s * 0.8, s);
+        dummy.updateMatrix();
+        smallRocks.setMatrixAt(ri++, dummy.matrix);
       }
-    } else if (bi < preset.boulders && slope < 9) {
-      // Wall bases and plateau → boulders.
-      dummy.position.set(x, h, z);
-      dummy.rotation.set(rng() * 0.6, rng() * Math.PI * 2, rng() * 0.6);
-      const s = 0.7 + rng() * rng() * 5.5;
-      dummy.scale.set(s, s, s);
-      dummy.updateMatrix();
-      boulders.setMatrixAt(bi++, dummy.matrix);
+    } else if (!onPad) {
+      // Wall bases and plateau → spires, buttes, boulders, loose stones.
+      if (pi < preset.spires && rng() < 0.06 && slope < 6) {
+        dummy.position.set(x, h - 0.3, z);
+        dummy.rotation.set((rng() - 0.5) * 0.15, rng() * Math.PI * 2, (rng() - 0.5) * 0.15);
+        const s = 1.0 + rng() * rng() * 2.2;
+        dummy.scale.set(s * (0.8 + rng() * 0.3), s, s * (0.8 + rng() * 0.3));
+        dummy.updateMatrix();
+        spires.setMatrixAt(pi++, dummy.matrix);
+      } else if (ti < preset.buttes && rng() < 0.05 && slope < 5) {
+        dummy.position.set(x, h - 0.4, z);
+        dummy.rotation.set(0, rng() * Math.PI * 2, 0);
+        const s = 1.0 + rng() * 1.4;
+        dummy.scale.set(s * (0.9 + rng() * 0.5), s * (0.8 + rng() * 0.7), s * (0.9 + rng() * 0.5));
+        dummy.updateMatrix();
+        buttes.setMatrixAt(ti++, dummy.matrix);
+      } else if (bi < preset.boulders && slope < 9) {
+        dummy.position.set(x, h, z);
+        dummy.rotation.set(rng() * 0.6, rng() * Math.PI * 2, rng() * 0.6);
+        const s = 0.7 + rng() * rng() * 5.5;
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        boulders.setMatrixAt(bi++, dummy.matrix);
+      } else if (ri < preset.smallRocks && slope < 6) {
+        dummy.position.set(x, h - 0.15, z);
+        dummy.rotation.set(rng() * Math.PI, rng() * Math.PI * 2, rng() * Math.PI);
+        const s = 0.25 + rng() * rng() * 0.9;
+        dummy.scale.set(s, s * 0.8, s);
+        dummy.updateMatrix();
+        smallRocks.setMatrixAt(ri++, dummy.matrix);
+      }
     }
   }
 
-  boulders.count = bi;
-  cacti.count = ci;
-  shrubs.count = si;
-  boulders.instanceMatrix.needsUpdate = true;
-  cacti.instanceMatrix.needsUpdate = true;
-  shrubs.instanceMatrix.needsUpdate = true;
+  const all = [boulders, cacti, shrubs, spires, buttes, smallRocks, deadBush];
+  const counts = [bi, ci, si, pi, ti, ri, di];
+  all.forEach((mesh, k) => {
+    mesh.count = counts[k];
+    mesh.instanceMatrix.needsUpdate = true;
+  });
 
-  root.add(boulders, cacti, shrubs);
-  cullables.push(boulders, cacti, shrubs);
+  root.add(...all);
+  cullables.push(...all);
   highShadowObjects.push(cacti);
 }
 

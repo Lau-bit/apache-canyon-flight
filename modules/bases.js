@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { canyonCenterZ, WORLD } from './canyon.js';
 
 const PAD_TOP = 3.2;
 
@@ -18,6 +17,7 @@ function addLabel(group, text, y) {
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true }));
   sprite.position.set(0, y, 0);
   sprite.scale.set(11, 2.75, 1);
+  sprite.userData.isWorldLabel = true;
   group.add(sprite);
 }
 
@@ -121,24 +121,140 @@ function buildOneBase(name) {
   sock.position.set(17.6, PAD_TOP + 7.4, 6);
   group.add(sock);
 
+  // --- Base-yard details ------------------------------------------------------
+  const tarmac = new THREE.MeshStandardMaterial({ color: 0x57544d, roughness: 0.98, metalness: 0 });
+  const sandbag = new THREE.MeshStandardMaterial({ color: 0x9a8a63, roughness: 0.98 });
+  const tan = new THREE.MeshStandardMaterial({ color: 0x8f7c52, roughness: 0.9 });
+  const tire = new THREE.MeshStandardMaterial({ color: 0x16181a, roughness: 0.92 });
+  const barrier = new THREE.MeshStandardMaterial({ color: 0x9a958a, roughness: 0.95 });
+
+  // Worn tarmac apron the pad sits on, so the base reads as a cleared yard.
+  const yard = new THREE.Mesh(new THREE.CylinderGeometry(27, 27.6, 0.16, 48), tarmac);
+  yard.position.y = 0.08;
+  yard.receiveShadow = true;
+  group.add(yard);
+
+  // Perimeter fence: a ring of posts with two thin rails.
+  const fenceMat = new THREE.MeshStandardMaterial({ color: 0x4c4f4a, roughness: 0.6, metalness: 0.5 });
+  const fenceR = 26;
+  const postGeo = new THREE.CylinderGeometry(0.09, 0.11, 2.4, 6);
+  for (let i = 0; i < 30; i++) {
+    const a = (i / 30) * Math.PI * 2;
+    const post = new THREE.Mesh(postGeo, fenceMat);
+    post.position.set(Math.cos(a) * fenceR, 1.2, Math.sin(a) * fenceR);
+    post.castShadow = true;
+    group.add(post);
+  }
+  const railGeo = new THREE.TorusGeometry(fenceR, 0.04, 5, 84);
+  for (const ry of [1.0, 1.9]) {
+    const rail = new THREE.Mesh(railGeo, fenceMat);
+    rail.rotation.x = Math.PI / 2;
+    rail.position.y = ry;
+    group.add(rail);
+  }
+
+  // Conex shipping containers.
+  const conexGeo = new THREE.BoxGeometry(6.4, 2.6, 2.5);
+  const conex1 = new THREE.Mesh(conexGeo, olive);
+  conex1.position.set(20, 1.4, -2);
+  const conex2 = new THREE.Mesh(conexGeo, tan);
+  conex2.position.set(20, 1.4, 1);
+  for (const c of [conex1, conex2]) {
+    c.castShadow = true;
+    c.receiveShadow = true;
+    group.add(c);
+  }
+
+  // A small stack of supply crates.
+  const crateGeo = new THREE.BoxGeometry(1.6, 1.6, 1.6);
+  const crateMat = new THREE.MeshStandardMaterial({ color: 0x8a6b3f, roughness: 0.9 });
+  for (const [cx, cy, cz] of [[12.5, 0.85, -9], [14.2, 0.85, -9], [13.3, 2.45, -9]]) {
+    const crate = new THREE.Mesh(crateGeo, crateMat);
+    crate.position.set(cx, cy, cz);
+    crate.castShadow = true;
+    crate.receiveShadow = true;
+    group.add(crate);
+  }
+
+  // Floodlight tower.
+  const flood = new THREE.Group();
+  const floodPole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.24, 12, 8), metal);
+  floodPole.position.y = 6;
+  floodPole.castShadow = true;
+  const floodHead = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.7, 0.5), darkConcrete);
+  floodHead.position.set(0, 11.6, 0.5);
+  const floodLensMat = new THREE.MeshStandardMaterial({ color: 0x2a261a, emissive: 0xfff0c0, emissiveIntensity: 0.5 });
+  for (const lx of [-0.8, 0, 0.8]) {
+    const lens = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.12), floodLensMat);
+    lens.position.set(lx, 11.6, 0.78);
+    flood.add(lens);
+  }
+  flood.add(floodPole, floodHead);
+  flood.position.set(-15, 0, 16);
+  group.add(flood);
+
+  // A parked utility truck.
+  const truck = new THREE.Group();
+  const truckMat = new THREE.MeshStandardMaterial({ color: 0x4d5436, roughness: 0.7 });
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(7, 1.6, 3), truckMat);
+  bed.position.set(0, 1.7, 0);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2, 3), truckMat);
+  cab.position.set(3.1, 2.0, 0);
+  truck.add(bed, cab);
+  const wheelGeo = new THREE.CylinderGeometry(0.8, 0.8, 0.5, 12);
+  for (const wx of [-2.2, 2.4]) {
+    for (const wz of [-1.45, 1.45]) {
+      const wheel = new THREE.Mesh(wheelGeo, tire);
+      wheel.rotation.x = Math.PI / 2;
+      wheel.position.set(wx, 0.8, wz);
+      truck.add(wheel);
+    }
+  }
+  truck.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  truck.position.set(19, 0, 17);
+  truck.rotation.y = -0.5;
+  group.add(truck);
+
+  // Jersey blast barriers lining the approach.
+  const jerseyGeo = new THREE.BoxGeometry(3.2, 1.1, 0.7);
+  for (const [jx, jz, jr] of [[-9, 21, 0.18], [-5.6, 21.4, 0.18], [8, 21, -0.18], [11.4, 20.5, -0.18]]) {
+    const j = new THREE.Mesh(jerseyGeo, barrier);
+    j.position.set(jx, 0.55, jz);
+    j.rotation.y = jr;
+    j.castShadow = true;
+    j.receiveShadow = true;
+    group.add(j);
+  }
+
+  // Sandbag revetment shielding the fuel drums.
+  const bagGeo = new THREE.BoxGeometry(1.1, 0.5, 0.8);
+  for (let row = 0; row < 2; row++) {
+    for (let i = 0; i < 8; i++) {
+      const bag = new THREE.Mesh(bagGeo, sandbag);
+      bag.position.set(-22 + i * 1.05 + (row % 2) * 0.5, 0.25 + row * 0.5, -6.4);
+      bag.castShadow = true;
+      bag.receiveShadow = true;
+      group.add(bag);
+    }
+  }
+
   addLabel(group, name, PAD_TOP + 5.5);
 
   return { group, beacons };
 }
 
-export function buildBases(root) {
+// `placements` is the scene's base layout: [{ name, x, z, rotationY }]. Each
+// scene arranges (and rotates) its two bases differently.
+export function buildBases(root, placements) {
   const beacons = [];
 
-  const a = buildOneBase('BASE ALPHA');
-  a.group.position.set(WORLD.baseAx, 0, canyonCenterZ(WORLD.baseAx));
-  root.add(a.group);
-  beacons.push(...a.beacons);
-
-  const b = buildOneBase('BASE BRAVO');
-  b.group.position.set(WORLD.baseBx, 0, canyonCenterZ(WORLD.baseBx));
-  b.group.rotation.y = Math.PI;
-  root.add(b.group);
-  beacons.push(...b.beacons);
+  for (const place of placements) {
+    const b = buildOneBase(place.name);
+    b.group.position.set(place.x, 0, place.z);
+    b.group.rotation.y = place.rotationY ?? 0;
+    root.add(b.group);
+    beacons.push(...b.beacons);
+  }
 
   return { beacons };
 }

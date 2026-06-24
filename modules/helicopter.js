@@ -1,12 +1,11 @@
 import * as THREE from 'three';
-import { terrainHeight } from './canyon.js';
 import { PAD_REST_Y } from './flightpath.js';
 
 // Model convention: nose points +Z, up is +Y, tail boom runs to -Z.
 
-const OLIVE = 0x464f30;
-const OLIVE_DARK = 0x363d24;
-const GUNMETAL = 0x2b2e2c;
+const OLIVE = 0x7c8757;
+const OLIVE_DARK = 0x5c6541;
+const GUNMETAL = 0x565b57;
 const GLASS = 0x10201c;
 
 function mat(color, opts = {}) {
@@ -34,44 +33,114 @@ function cyl(rt, rb, h, seg, material, x = 0, y = 0, z = 0) {
   return m;
 }
 
+// A box reshaped for an aerodynamic, faceted read: the roof can be pulled in
+// (topScale) and raked aft (topShiftZ) for a swept canopy, and the forward face
+// can be narrowed/drooped (front*) for a pointed nose.
+function sweptBox(w, h, d, material, x, y, z, opts = {}) {
+  const { topScale = 1, topShiftZ = 0, frontScaleX = 1, frontScaleY = 1, frontShiftY = 0, botFrontShiftZ = 0 } = opts;
+  const g = new THREE.BoxGeometry(w, h, d);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    let vx = p.getX(i);
+    let vy = p.getY(i);
+    let vz = p.getZ(i);
+    if (vy > 0) {
+      vx *= topScale;
+      vz = vz * topScale + topShiftZ;
+    } else if (vz > 0) {
+      // Pull the lower-front edge back so a raked roof doesn't leave the bottom
+      // sticking out as a wedge.
+      vz += botFrontShiftZ;
+    }
+    if (vz > 0) {
+      vx *= frontScaleX;
+      vy = vy * frontScaleY + frontShiftY;
+    }
+    p.setXYZ(i, vx, vy, vz);
+  }
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, material);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
 // ---- Apache model builder ----
 function buildApache() {
   const group = new THREE.Group();
 
   const oliveMat = mat(OLIVE, { roughness: 0.78 });
   const oliveDarkMat = mat(OLIVE_DARK, { roughness: 0.8 });
-  const metalMat = mat(GUNMETAL, { roughness: 0.5, metalness: 0.7 });
-  const glassMat = new THREE.MeshStandardMaterial({ color: GLASS, roughness: 0.18, metalness: 0.3 });
-  const blackMat = mat(0x16181a, { roughness: 0.85, metalness: 0.1 });
+  const metalMat = mat(GUNMETAL, { roughness: 0.55, metalness: 0.4 });
+  // Cockpit "glass": opaque dark grey with a low-roughness sheen so the sun
+  // glints off it like real canopy panes (no actual transparency).
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x4a515b, roughness: 0.16, metalness: 0.35 });
+  const frameMat = mat(OLIVE_DARK, { roughness: 0.6, metalness: 0.25 });
+  const blackMat = mat(0x35383b, { roughness: 0.85, metalness: 0.1 });
   const tipMat = mat(0xd8c23a, { roughness: 0.5 });
 
   // --- Fuselage ---
-  const body = box(1.5, 1.5, 6.4, oliveMat, 0, 0.1, 0.2);
+  // The forward fuselage tapers in toward the nose (narrower + lower at the
+  // front) so it doesn't read as a hard box poking out around the cockpit.
+  const body = sweptBox(1.5, 1.5, 6.4, oliveMat, 0, 0.1, 0.2, {
+    frontScaleX: 0.68, frontScaleY: 0.62, frontShiftY: -0.16,
+  });
   group.add(body);
 
   // Belly keel.
   group.add(box(1.2, 0.7, 5.6, oliveDarkMat, 0, -0.78, 0.1));
 
-  // Nose taper.
-  const nose = box(1.2, 1.1, 1.6, oliveMat, 0, -0.05, 3.4);
-  nose.scale.set(1, 1, 1);
+  // Pointed, drooping nose — narrows and noses down toward the sensor turret.
+  const nose = sweptBox(1.24, 1.3, 2.0, oliveMat, 0, -0.04, 3.3, {
+    frontScaleX: 0.42, frontScaleY: 0.5, frontShiftY: -0.2,
+  });
   group.add(nose);
-  // Sensor turrets (TADS / PNVS) on the nose tip.
-  const tads = cyl(0.4, 0.4, 0.6, 12, metalMat, 0, -0.36, 4.2);
-  tads.rotation.x = Math.PI / 2;
-  group.add(tads);
-  const pnvs = cyl(0.3, 0.3, 0.5, 12, metalMat, 0, 0.25, 4.2);
-  pnvs.rotation.x = Math.PI / 2;
+  // TADS / PNVS sensor turret: a rounded housing slung under the nose tip.
+  const turretBase = cyl(0.34, 0.42, 0.5, 14, metalMat, 0, -0.16, 4.05);
+  turretBase.rotation.x = Math.PI / 2;
+  group.add(turretBase);
+  const turret = new THREE.Mesh(new THREE.SphereGeometry(0.37, 16, 12), metalMat);
+  turret.position.set(0, -0.16, 4.4);
+  turret.scale.set(1, 0.92, 1.12);
+  group.add(turret);
+  // Smaller PNVS sight perched on top of the nose.
+  const pnvs = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 10), metalMat);
+  pnvs.position.set(0, 0.34, 4.2);
+  pnvs.scale.set(1, 0.85, 1.1);
   group.add(pnvs);
 
   // --- Tandem stepped canopy (gunner front-low, pilot rear-high) ---
-  const gunnerCanopy = box(1.05, 0.85, 1.5, glassMat, 0, 0.7, 2.35);
-  group.add(gunnerCanopy);
-  const pilotCanopy = box(1.1, 1.0, 1.6, glassMat, 0, 1.0, 0.85);
-  group.add(pilotCanopy);
-  // Canopy framing.
-  group.add(box(1.12, 0.08, 1.55, oliveDarkMat, 0, 1.15, 2.35));
-  group.add(box(1.16, 0.08, 1.65, oliveDarkMat, 0, 1.52, 0.85));
+  // Each station is a dark-glass greenhouse whose roof is pulled in and raked
+  // aft, so the windscreens slope and the silhouette reads swept rather than
+  // boxy — like the Apache's flat-panel canopy.
+  function sweptCanopy(cx, cy, cz, w, h, d, topScale, topShiftZ, botShiftZ = 0) {
+    const c = new THREE.Group();
+    c.position.set(cx, cy, cz);
+    c.add(sweptBox(w, h, d, glassMat, 0, 0, 0, { topScale, topShiftZ, botFrontShiftZ: botShiftZ }));
+
+    const fw = 0.06;
+    // Base sill (trimmed to the lower front) + raked-back roof rail.
+    c.add(box(w + 0.05, fw, d + botShiftZ + 0.05, frameMat, 0, -h / 2, botShiftZ / 2));
+    c.add(box(w * topScale + 0.05, fw, d * topScale + 0.05, frameMat, 0, h / 2, topShiftZ));
+    // A-pillars following the windscreen rake (centre mullion + side posts).
+    const zBot = d / 2 + botShiftZ;
+    const zTop = (d / 2) * topScale + topShiftZ;
+    const rake = Math.atan2(zTop - zBot, h);
+    const pillarLen = Math.hypot(h, zTop - zBot);
+    for (const sx of [-0.46, 0, 0.46]) {
+      const post = box(fw, pillarLen, fw, frameMat, sx * w, 0, (zBot + zTop) / 2);
+      post.rotation.x = rake;
+      c.add(post);
+    }
+    return c;
+  }
+  group.add(sweptCanopy(0, 0.68, 2.5, 0.98, 0.6, 1.55, 0.62, -0.42, -0.55)); // gunner: trimmed lower front
+  group.add(sweptCanopy(0, 0.92, 1.0, 1.06, 0.82, 1.5, 0.74, -0.28)); // pilot: higher rear step
+  // Roll-over frame arch at the step between the two cockpits.
+  group.add(box(1.12, 0.12, 0.18, frameMat, 0, 1.05, 1.73));
+  // Avionics spine sloping down from the pilot station back to the rotor mast.
+  group.add(sweptBox(1.04, 0.58, 1.7, oliveMat, 0, 0.55, -0.4, { topScale: 0.78, topShiftZ: -0.12 }));
 
   // --- Chin gun (M230 30mm) ---
   const gunMount = box(0.5, 0.4, 0.5, metalMat, 0, -0.85, 3.1);
@@ -117,17 +186,19 @@ function buildApache() {
     group.add(exhaust);
   }
 
-  // --- Tail boom ---
-  const boom = cyl(0.32, 0.62, 5.6, 12, oliveMat, 0, 0.55, -4.6);
+  // --- Tail boom (long, tapering aft, so the tail rotor sits clear of the
+  // main-rotor disc instead of overlapping it) ---
+  const boom = cyl(0.5, 0.34, 7.6, 12, oliveMat, 0, 0.55, -5.6);
   boom.rotation.x = Math.PI / 2;
   group.add(boom);
 
-  // Vertical tail fin (swept).
-  const fin = box(0.22, 2.0, 1.7, oliveMat, 0, 1.35, -7.0);
-  fin.rotation.x = -0.32;
+  // Vertical tail fin (tall, swept) — carries the tail rotor high up.
+  const fin = box(0.24, 2.6, 1.5, oliveMat, 0, 1.7, -9.1);
+  fin.rotation.x = -0.34;
   group.add(fin);
-  // Horizontal stabilator.
-  const stab = box(3.4, 0.16, 1.0, oliveMat, 0, 0.5, -6.7);
+  // Horizontal stabilator: mounted low on the boom and forward of the tail
+  // rotor, so the rotor disc no longer cuts through it.
+  const stab = box(3.2, 0.16, 1.0, oliveMat, 0, 0.42, -8.0);
   group.add(stab);
 
   // --- Main rotor ---
@@ -161,7 +232,7 @@ function buildApache() {
 
   // --- Tail rotor (left side of fin, spins about X) ---
   const tailRotor = new THREE.Group();
-  tailRotor.position.set(-0.35, 1.5, -7.1);
+  tailRotor.position.set(-0.42, 2.35, -9.2);
   const tailBladeMat = new THREE.MeshStandardMaterial({ color: 0x1d2022, roughness: 0.7, transparent: true, opacity: 1 });
   for (let i = 0; i < 4; i++) {
     const bg = new THREE.Group();
@@ -176,7 +247,7 @@ function buildApache() {
     new THREE.CircleGeometry(1.5, 24),
     new THREE.MeshBasicMaterial({ color: 0x9aa0a4, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })
   );
-  tailBlur.position.set(-0.45, 1.5, -7.1);
+  tailBlur.position.set(-0.52, 2.35, -9.2);
   tailBlur.rotation.y = Math.PI / 2;
   group.add(tailBlur);
 
@@ -189,9 +260,11 @@ function buildApache() {
     wheel.rotation.z = Math.PI / 2;
     group.add(wheel);
   }
-  const tailStrut = cyl(0.05, 0.05, 0.8, 6, metalMat, 0, -0.6, -6.6);
+  // Tail wheel: strut runs from the underside of the boom down to the wheel so
+  // it's actually attached rather than floating below the airframe.
+  const tailStrut = cyl(0.05, 0.05, 0.8, 6, metalMat, 0, -0.2, -7.6);
   group.add(tailStrut);
-  const tailWheel = cyl(0.2, 0.2, 0.18, 10, blackMat, 0, -1.0, -6.6);
+  const tailWheel = cyl(0.22, 0.22, 0.2, 10, blackMat, 0, -0.6, -7.6);
   tailWheel.rotation.z = Math.PI / 2;
   group.add(tailWheel);
 
@@ -221,8 +294,9 @@ function easeInOut(t) {
 }
 
 export class Helicopter {
-  constructor(path) {
+  constructor(path, heightFn = () => 0) {
     this.path = path;
+    this.heightFn = heightFn;
     const built = buildApache();
     this.group = built.group;
     this.parts = built;
@@ -272,6 +346,16 @@ export class Helicopter {
     this._vy = 0;
     this._prevSpeed = 0;
     this._accel = 0;
+    this._landFromX = 0;
+    this._landFromZ = 0;
+
+    // --- Manual flight (experimental) ---
+    this.manualControl = false;
+    this.manualInput = { collective: 0, pitch: 0, roll: 0, yaw: 0 };
+    this._mvel = new THREE.Vector3();   // world-space velocity while hand-flown
+    this.manualMaxClimb = 18;           // m/s vertical at full collective
+    this.manualAccel = 26;              // m/s^2 horizontal push from cyclic
+    this.manualMaxTilt = 0.4;           // rad cyclic pitch tilt at full input
 
     // Initialise sitting on Base Alpha, facing Bravo.
     const start = path.getStart();
@@ -287,6 +371,92 @@ export class Helicopter {
 
   setAutoLoop(on) {
     this.autoLoop = Boolean(on);
+  }
+
+  // Toggle hand-flying. On enable, the manual integrator is seeded from the
+  // current pose; on disable, the auto route is rejoined at the nearest point.
+  setManualControl(on) {
+    on = Boolean(on);
+    if (on === this.manualControl) return;
+    this.manualControl = on;
+    if (on) {
+      this._posTarget.copy(this.group.position);
+      this._mvel.set(0, 0, 0);
+      this.vel = 0;
+      this.phase = 'MANUAL';
+    } else {
+      this._resumeAuto();
+    }
+  }
+
+  // Snap the auto state machine back onto the path at whatever point is closest
+  // to where the pilot left the aircraft, then resume cruising.
+  _resumeAuto() {
+    const pos = this.group.position;
+    const len = this.path.totalLength;
+    const samples = 240;
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i <= samples; i++) {
+      const d = (i / samples) * len;
+      const f = this.path.getFrameAtDistance(d);
+      const dd = (f.point.x - pos.x) ** 2 + (f.point.z - pos.z) ** 2;
+      if (dd < bestD) { bestD = dd; best = d; }
+    }
+    this.dist = best;
+    this.vel = this.currentSpeed;
+    this.needTurn = false;
+    this.phase = 'CRUISE';
+    this._prevPosY = pos.y;
+  }
+
+  // Hand-flown step: cyclic tilts the airframe and pushes it that way, the
+  // collective sets a vertical rate, the pedals yaw the nose. Velocity carries
+  // (with drag), so it coasts like a helicopter rather than stopping dead.
+  _updateManual(dt) {
+    const k = this.manualInput;
+    this.phase = 'MANUAL';
+
+    // Yaw pedals.
+    const yawTarget = (k.yaw || 0) * this.maxYawRate;
+    this.yawVel = damp(this.yawVel, yawTarget, 4, dt);
+    this.yaw += this.yawVel * dt;
+    this._headingVec.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+
+    // Cyclic → attitude (positive pitch = nose-down; bank into the roll input).
+    this.pitch = damp(this.pitch, (k.pitch || 0) * this.manualMaxTilt, 5, dt);
+    this.roll = damp(this.roll, -(k.roll || 0) * this.maxBank, 5, dt);
+
+    // Cyclic → horizontal thrust along the body forward/right axes.
+    const fwdX = this._headingVec.x;
+    const fwdZ = this._headingVec.z;
+    const rightX = fwdZ;
+    const rightZ = -fwdX;
+    const a = this.manualAccel;
+    this._mvel.x += (fwdX * (k.pitch || 0) + rightX * (k.roll || 0)) * a * dt;
+    this._mvel.z += (fwdZ * (k.pitch || 0) + rightZ * (k.roll || 0)) * a * dt;
+    const hDrag = Math.exp(-1.5 * dt);
+    this._mvel.x *= hDrag;
+    this._mvel.z *= hDrag;
+
+    // Collective → vertical rate.
+    this._mvel.y = damp(this._mvel.y, (k.collective || 0) * this.manualMaxClimb, 3, dt);
+
+    // Integrate position on the persistent target vector (no bob feedback).
+    const p = this._posTarget;
+    p.x += this._mvel.x * dt;
+    p.y += this._mvel.y * dt;
+    p.z += this._mvel.z * dt;
+
+    // Keep clear of terrain/sea, and below a soft ceiling.
+    const minY = this.heightFn(p.x, p.z) + 2.4;
+    if (p.y < minY) { p.y = minY; if (this._mvel.y < 0) this._mvel.y = 0; }
+    if (p.y > 320) { p.y = 320; if (this._mvel.y > 0) this._mvel.y = 0; }
+
+    this.currentSpeed = Math.hypot(this._mvel.x, this._mvel.z);
+    this.vel = this.currentSpeed;
+    this._prevPosY = p.y;
+    this._prevSpeed = this.currentSpeed;
   }
 
   get destName() {
@@ -307,7 +477,7 @@ export class Helicopter {
 
   get altitudeAGL() {
     const p = this.group.position;
-    return Math.max(0, p.y - terrainHeight(p.x, p.z) - 1.4);
+    return Math.max(0, p.y - this.heightFn(p.x, p.z) - 1.4);
   }
 
   get rangeToDestNm() {
@@ -403,8 +573,12 @@ export class Helicopter {
         const lookaheadTime = Math.max(lookahead / Math.max(this.currentSpeed, 1), 0.5);
         this._bankSignal = headingDelta / lookaheadTime;
 
-        // Commit to landing once within a few units of the pad.
+        // Commit to landing once within a few units of the pad. Remember where
+        // we were so the descent slides smoothly onto the pad instead of
+        // teleporting (which used to snap every following camera).
         if (distRemaining <= 4) {
+          this._landFromX = frame.point.x;
+          this._landFromZ = frame.point.z;
           this.dist = this.dir > 0 ? len : 0;
           this.phase = 'LAND';
           this.landT = 0;
@@ -415,7 +589,12 @@ export class Helicopter {
         this.vel = damp(this.vel, 0, 3, dt);
         this.currentSpeed = this.vel;
         this.landT = Math.min(1, this.landT + dt / this.landDuration);
-        setPad(THREE.MathUtils.lerp(hoverY, this.padRestY, easeInOut(this.landT)));
+        const e = easeInOut(this.landT);
+        this._posTarget.set(
+          THREE.MathUtils.lerp(this._landFromX, endFrame.point.x, e),
+          THREE.MathUtils.lerp(hoverY, this.padRestY, e),
+          THREE.MathUtils.lerp(this._landFromZ, endFrame.point.z, e),
+        );
         this._desiredYaw = this.yaw;
         if (this.landT >= 1) {
           if (this.autoLoop) {
@@ -448,6 +627,19 @@ export class Helicopter {
     // Strobe.
     this.strobePhase += dt;
     this.parts.strobeMat.emissiveIntensity = (this.strobePhase % 1.1) < 0.1 ? 3.0 : 0.15;
+
+    // Hand-flown mode runs its own integrator and shares only the finalize step.
+    if (this.manualControl) {
+      this._updateManual(dt);
+      this.bobPhase += dt * 1.6;
+      const hoverBob = Math.sin(this.bobPhase * 1.3) * 0.06
+        * (1 - THREE.MathUtils.smoothstep(this.currentSpeed, 5, 34));
+      this.group.position.copy(this._posTarget);
+      this.group.position.y += hoverBob;
+      this._euler.set(this.pitch, this.yaw, this.roll, 'YXZ');
+      this.group.quaternion.setFromEuler(this._euler);
+      return;
+    }
 
     this._updateFlight(dt);
 
@@ -507,16 +699,19 @@ export class Helicopter {
 
   // Cockpit eye pose in world space. look: 'forward'|'left'|'right'|'back'|'down'
   getCockpitPose(look = 'forward') {
-    // Gunner seat, local space.
-    this._eye.set(0, 0.55, 2.0).applyQuaternion(this.group.quaternion).add(this.group.position);
+    // Eye out at the nose, level with the TADS/PNVS sensor turrets, so no part
+    // of the airframe blocks the forward view.
+    this._eye.set(0, 0.25, 4.5).applyQuaternion(this.group.quaternion).add(this.group.position);
 
+    // Lead the view slightly into the direction the nose is swinging.
+    const lead = THREE.MathUtils.clamp(this.yawVel * 0.5, -0.45, 0.45);
     let local;
     switch (look) {
       case 'left': local = new THREE.Vector3(-1, -0.1, 0.3); break;
       case 'right': local = new THREE.Vector3(1, -0.1, 0.3); break;
       case 'back': local = new THREE.Vector3(0, 0.1, -1); break;
       case 'down': local = new THREE.Vector3(0, -0.6, 0.7); break;
-      default: local = new THREE.Vector3(0, -0.06, 1); break;
+      default: local = new THREE.Vector3(lead, -0.03, 1); break;
     }
     this._look.copy(local).applyQuaternion(this.group.quaternion).add(this._eye);
     return { eye: this._eye, lookAt: this._look };

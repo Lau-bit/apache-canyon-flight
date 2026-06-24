@@ -5,10 +5,9 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
-import { buildCanyon, WORLD } from './modules/canyon.js';
 import { buildBases } from './modules/bases.js';
-import { FlightPath } from './modules/flightpath.js';
 import { Helicopter } from './modules/helicopter.js';
+import { SCENES, getScene } from './modules/scenes.js';
 
 // ---------------------------------------------------------------- renderer ---
 const scene = new THREE.Scene();
@@ -28,7 +27,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.appendChild(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.3, 2200);
-camera.position.set(WORLD.baseAx - 36, 30, 48);
+camera.position.set(-336, 30, 48); // reframed onto the active base at boot
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -154,20 +153,33 @@ const timeOfDay = {
 };
 
 function applyTimeOfDay(key) {
-  const p = timeOfDay[key] ?? timeOfDay.noon;
-  skyMat.uniforms.topColor.value.setHex(p.sky.top);
-  skyMat.uniforms.midColor.value.setHex(p.sky.mid);
-  skyMat.uniforms.bottomColor.value.setHex(p.sky.bottom);
-  scene.fog = new THREE.Fog(p.fog.color, p.fog.near, p.fog.far);
-  sun.color.setHex(p.sun.color);
-  sun.intensity = p.sun.intensity;
-  sunDir.copy(p.sun.dir).normalize();
-  hemi.color.setHex(p.hemi.sky);
-  hemi.groundColor.setHex(p.hemi.ground);
-  hemi.intensity = p.hemi.intensity;
-  ambient.intensity = p.ambient;
-  renderer.toneMappingExposure = p.exposure;
-  sunSprite.material.color.setHex(p.sunColor);
+  const preset = timeOfDay[key] ?? timeOfDay.noon;
+  // Build a mutable working copy so the active scene can layer its own lighting
+  // character on top without corrupting the shared preset.
+  const L = {
+    sky: { ...preset.sky },
+    fog: { ...preset.fog },
+    sun: { color: preset.sun.color, intensity: preset.sun.intensity, dir: preset.sun.dir.clone() },
+    hemi: { ...preset.hemi },
+    ambient: preset.ambient,
+    exposure: preset.exposure,
+    sunColor: preset.sunColor,
+  };
+  currentScene?.tuneLighting?.(L);
+
+  skyMat.uniforms.topColor.value.setHex(L.sky.top);
+  skyMat.uniforms.midColor.value.setHex(L.sky.mid);
+  skyMat.uniforms.bottomColor.value.setHex(L.sky.bottom);
+  scene.fog = new THREE.Fog(L.fog.color, L.fog.near, L.fog.far);
+  sun.color.setHex(L.sun.color);
+  sun.intensity = L.sun.intensity;
+  sunDir.copy(L.sun.dir).normalize();
+  hemi.color.setHex(L.hemi.sky);
+  hemi.groundColor.setHex(L.hemi.ground);
+  hemi.intensity = L.hemi.intensity;
+  ambient.intensity = L.ambient;
+  renderer.toneMappingExposure = L.exposure;
+  sunSprite.material.color.setHex(L.sunColor);
 }
 
 // --------------------------------------------------------------- post-fx ------
@@ -178,10 +190,12 @@ composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
 // ----------------------------------------------------------------- world ------
-const path = new FlightPath();
+let currentScene = getScene(window.localStorage.getItem('apache-canyon.scene') || 'canyon');
+let path = currentScene.makePath();
 let worldRoot = new THREE.Group();
 scene.add(worldRoot);
-let canyonGroup = null;
+let terrainGroup = null;
+let staticGroup = null;
 let canyonState = null;
 let beacons = [];
 let helicopter = null;
@@ -214,30 +228,63 @@ function buildCinematicStations() {
   }
 }
 
-function buildCanyonGroup(detail) {
-  if (canyonGroup) {
-    worldRoot.remove(canyonGroup);
-    disposeGroup(canyonGroup);
+// Rebuildable terrain group — the only part torn down on a scene-detail change.
+function buildTerrainGroup(detail) {
+  if (terrainGroup) {
+    worldRoot.remove(terrainGroup);
+    disposeGroup(terrainGroup);
   }
-  canyonGroup = new THREE.Group();
-  worldRoot.add(canyonGroup);
-  canyonState = buildCanyon(canyonGroup, { detail });
+  terrainGroup = new THREE.Group();
+  worldRoot.add(terrainGroup);
+  canyonState = currentScene.buildTerrain(terrainGroup, detail);
   syncShadowCasters();
 }
 
 function buildWorld(detail) {
-  buildCanyonGroup(detail);
+  buildTerrainGroup(detail);
 
-  const staticGroup = new THREE.Group();
+  // Static scenery (surrounding back-country, if any) + the two bases. Rebuilt
+  // only on a scene change, not on detail changes.
+  staticGroup = new THREE.Group();
   worldRoot.add(staticGroup);
-  beacons = buildBases(staticGroup).beacons;
+  currentScene.buildStatic(staticGroup);
+  // A scene may supply its own base builder (e.g. the sea's carrier + island);
+  // otherwise fall back to the generic land bases at the scene's placements.
+  beacons = (currentScene.buildBases
+    ? currentScene.buildBases(staticGroup)
+    : buildBases(staticGroup, currentScene.basePlacements())).beacons;
 
-  helicopter = new Helicopter(path);
+  helicopter = new Helicopter(path, currentScene.height);
   helicopter.setCruiseSpeed(cruiseSpeed);
   helicopter.setAutoLoop(autoLoop);
+  helicopter.setManualControl(manualControl);
   worldRoot.add(helicopter.group);
 
   buildCinematicStations();
+  applyLabelVisibility();
+}
+
+// Full teardown + rebuild when switching scenes.
+function setScene(id) {
+  const next = getScene(id);
+  if (next === currentScene && terrainGroup) return;
+  currentScene = next;
+  window.localStorage.setItem(lsKey('scene'), currentScene.id);
+
+  for (const g of [terrainGroup, staticGroup, helicopter?.group]) {
+    if (!g) continue;
+    worldRoot.remove(g);
+    disposeGroup(g);
+  }
+  terrainGroup = null;
+  staticGroup = null;
+  helicopter = null;
+
+  path = currentScene.makePath();
+  buildWorld(sceneDetail);
+  applyTimeOfDay(timeKey); // scene-specific lighting tweak
+  applyShadowQuality();
+  requestRecenter();
 }
 
 // ----------------------------------------------------------------- state ------
@@ -253,6 +300,8 @@ let sceneDetail = window.localStorage.getItem(lsKey('detail')) || 'high';
 let shadowQuality = window.localStorage.getItem(lsKey('shadow')) || 'high';
 let performanceMode = window.localStorage.getItem(lsKey('perf')) === 'true';
 let rendererStats = window.localStorage.getItem(lsKey('stats')) === 'true';
+let showLabels = window.localStorage.getItem(lsKey('labels')) !== 'false';
+let manualControl = window.localStorage.getItem(lsKey('manual')) === 'true';
 
 const frameRateIntervals = { native: 0, 60: 1000 / 60, 30: 1000 / 30 };
 const shadowModes = {
@@ -282,6 +331,13 @@ function applyShadowQuality() {
     sun.shadow.map = null;
   }
   syncShadowCasters();
+}
+
+// Show/hide every in-world text sprite (base names tagged with isWorldLabel).
+function applyLabelVisibility() {
+  worldRoot.traverse((obj) => {
+    if (obj.userData?.isWorldLabel) obj.visible = showLabels;
+  });
 }
 
 function applyRenderQuality() {
@@ -318,6 +374,10 @@ function setCameraMode(mode) {
   syncCameraInputs();
 }
 cameraInputs.forEach((i) => i.addEventListener('change', () => setCameraMode(i.value)));
+
+const sceneSelect = $('scene-select');
+sceneSelect.value = currentScene.id;
+sceneSelect.addEventListener('change', () => setScene(sceneSelect.value));
 
 const routeSelect = $('route-select');
 routeSelect.value = timeKey;
@@ -359,7 +419,7 @@ sceneDetailSelect.value = sceneDetail;
 sceneDetailSelect.addEventListener('change', () => {
   sceneDetail = sceneDetailSelect.value;
   window.localStorage.setItem(lsKey('detail'), sceneDetail);
-  buildCanyonGroup(sceneDetail);
+  buildTerrainGroup(sceneDetail);
 });
 
 const shadowSelect = $('shadow-quality-select');
@@ -376,6 +436,24 @@ perfInput.addEventListener('change', () => {
   performanceMode = perfInput.checked;
   window.localStorage.setItem(lsKey('perf'), String(performanceMode));
   applyRenderQuality();
+});
+
+const labelsInput = $('world-labels');
+labelsInput.checked = showLabels;
+labelsInput.addEventListener('change', () => {
+  showLabels = labelsInput.checked;
+  window.localStorage.setItem(lsKey('labels'), String(showLabels));
+  applyLabelVisibility();
+});
+
+const manualInput = $('manual-control');
+manualInput.checked = manualControl;
+manualInput.addEventListener('change', () => {
+  manualControl = manualInput.checked;
+  window.localStorage.setItem(lsKey('manual'), String(manualControl));
+  flightKeys.clear();
+  helicopter?.setManualControl(manualControl);
+  document.body.classList.toggle('manual-control', manualControl);
 });
 
 const statsInput = $('renderer-stats');
@@ -401,6 +479,22 @@ const routeHeli = $('route-heli');
 
 // ------------------------------------------------------------- keyboard -------
 const orbitPanKeys = new Set();
+const flightKeys = new Set();
+const FLIGHT_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+
+// Build the helicopter's manual-control input from the held flight keys.
+// W/S cyclic pitch (forward/back), ↑/↓ collective (climb/descend), A/D cyclic
+// roll (bank), ←/→ pedals (yaw).
+function manualInputFromKeys() {
+  const k = flightKeys;
+  return {
+    collective: (k.has('arrowup') ? 1 : 0) - (k.has('arrowdown') ? 1 : 0),
+    pitch: (k.has('w') ? 1 : 0) - (k.has('s') ? 1 : 0),
+    roll: (k.has('a') ? 1 : 0) - (k.has('d') ? 1 : 0),
+    yaw: (k.has('arrowleft') ? 1 : 0) - (k.has('arrowright') ? 1 : 0),
+  };
+}
+
 window.addEventListener('keydown', (e) => {
   const key = e.key.toLowerCase();
   if (e.shiftKey && key === 'q') {
@@ -415,13 +509,23 @@ window.addEventListener('keydown', (e) => {
     requestRecenter();
     return;
   }
+  // While hand-flying, the flight keys drive the helicopter (and override the
+  // orbit arrow-pan, so arrows steer the aircraft instead of the camera).
+  if (manualControl && FLIGHT_KEYS.has(key)) {
+    flightKeys.add(key);
+    e.preventDefault();
+    return;
+  }
   if (cameraMode === 'orbit' && e.key.startsWith('Arrow')) {
     orbitPanKeys.add(e.key);
     e.preventDefault();
   }
 });
-window.addEventListener('keyup', (e) => orbitPanKeys.delete(e.key));
-window.addEventListener('blur', () => orbitPanKeys.clear());
+window.addEventListener('keyup', (e) => {
+  orbitPanKeys.delete(e.key);
+  flightKeys.delete(e.key.toLowerCase());
+});
+window.addEventListener('blur', () => { orbitPanKeys.clear(); flightKeys.clear(); });
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -436,6 +540,9 @@ window.addEventListener('resize', () => {
 // Orbit: a free orbit that tracks the heli and never auto-reframes — only C snaps.
 // Cockpit: re-aims forward from the seat when idle; you can glance around.
 // Cinematic: auto-cuts between canyon-rim stations.
+// Heli phases where the orbit camera lets go of its follow-lock (vertical
+// takeoff and landing), so the aircraft moves freely within a held frame.
+const padTransitionPhases = new Set(['DEPART', 'LAND']);
 const orbitOffset = new THREE.Vector3(-24, 13, 28);
 const chaseDefaultRadius = 17.3;
 const chaseDefaultPhi = 1.18; // ~22 deg above the horizon
@@ -525,8 +632,16 @@ function updateOrbit(dt) {
     // Shift the whole rig by the heli's movement; the user's view fully persists.
     camDelta.copy(followTarget).sub(orbitAnchor);
     orbitAnchor.copy(followTarget);
-    camera.position.add(camDelta);
-    controls.target.add(camDelta);
+    if (padTransitionPhases.has(helicopter.phase)) {
+      // Release the position lock during pad transitions, but keep the camera
+      // AIMED at the heli so it stays centred while it lifts off / settles.
+      // Leaving camera.position untouched frees the framing (and arrow pan), and
+      // re-syncing the anchor + target means no offset is carried into cruise.
+      controls.target.copy(followTarget);
+    } else {
+      camera.position.add(camDelta);
+      controls.target.add(camDelta);
+    }
   }
 
   if (orbitPanKeys.size) {
@@ -636,6 +751,7 @@ function animate(now = 0) {
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
 
+  if (manualControl) helicopter.manualInput = manualInputFromKeys();
   helicopter.update(dt, t);
 
   // Sun + shadow follow the helicopter.
@@ -664,6 +780,7 @@ applyShadowQuality();
 applyRenderQuality();
 buildWorld(sceneDetail);
 syncCameraInputs();
+document.body.classList.toggle('manual-control', manualControl);
 controls.enabled = true;
 requestRecenter();
 animate();
