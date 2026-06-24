@@ -264,7 +264,7 @@ body.manual-control .menu-help-flight { display: block; }
   white-space: nowrap;
 }
 
-/* Reticle (cockpit view) */
+/* Reticles */
 #reticle {
   position: fixed;
   left: 50%;
@@ -289,6 +289,84 @@ body.manual-control .menu-help-flight { display: block; }
 #reticle::after { top: 50%; left: 0; height: 1px; width: 100%; transform: translateY(-50%); }
 
 body.cockpit-view #reticle { opacity: 1; }
+
+#weapon-crosshair {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 4;
+  pointer-events: none;
+  width: 78px;
+  height: 78px;
+  transform: translate(-50%, -50%);
+  border: 0;
+  border-radius: 0;
+  opacity: 0;
+  transition: opacity 0.2s;
+  filter: drop-shadow(0 0 4px rgba(94, 255, 82, 0.75));
+}
+
+#weapon-crosshair::before,
+#weapon-crosshair::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 25px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(98, 255, 76, 0.9);
+  box-shadow: 53px 0 0 rgba(98, 255, 76, 0.9);
+  transform: translate(-39px, -50%);
+}
+
+#weapon-crosshair::after {
+  width: 3px;
+  height: 25px;
+  box-shadow: 0 53px 0 rgba(98, 255, 76, 0.9);
+  transform: translate(-50%, -39px);
+}
+
+body.weapon-overlay #weapon-crosshair { opacity: 1; }
+
+#hitmarker {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 5;
+  pointer-events: none;
+  width: 44px;
+  height: 44px;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.96);
+  transition: opacity 0.08s, transform 0.08s;
+}
+
+#hitmarker span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 13px;
+  height: 2px;
+  border-radius: 1px;
+  background: #ffffff;
+  box-shadow:
+    0 -1px 0 rgba(0, 0, 0, 0.8),
+    0 1px 0 rgba(0, 0, 0, 0.8),
+    -1px 0 0 rgba(0, 0, 0, 0.8),
+    1px 0 0 rgba(0, 0, 0, 0.8);
+  transform-origin: center;
+}
+
+#hitmarker span:nth-child(1) { transform: translate(-25px, -17px) rotate(45deg); }
+#hitmarker span:nth-child(2) { transform: translate(12px, -17px) rotate(-45deg); }
+#hitmarker span:nth-child(3) { transform: translate(-25px, 15px) rotate(-45deg); }
+#hitmarker span:nth-child(4) { transform: translate(12px, 15px) rotate(45deg); }
+
+body.hitmarker #hitmarker {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
 
 body.ui-hidden #hud,
 body.ui-hidden #route,

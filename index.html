@@ -33,6 +33,13 @@
 </div>
 
 <div id="reticle"></div>
+<div id="weapon-crosshair"></div>
+<div id="hitmarker" aria-hidden="true">
+  <span></span>
+  <span></span>
+  <span></span>
+  <span></span>
+</div>
 
 <div id="menu">
   <button id="menu-button" type="button" aria-label="Flight options" aria-expanded="false">Menu</button>
@@ -54,6 +61,10 @@
       <label>
         <input type="radio" name="camera-mode" value="cinematic">
         4 Cinematic flyby
+      </label>
+      <label>
+        <input id="look-only-camera" type="checkbox" name="look-only-camera" checked>
+        Look-only idle camera
       </label>
     </fieldset>
     <fieldset>
@@ -89,6 +100,14 @@
       <label>
         <input id="manual-control" type="checkbox" name="manual-control">
         Manual flight <span class="tag">experimental</span>
+      </label>
+      <label>
+        <input id="weapon-overlay" type="checkbox" name="weapon-overlay">
+        Crosshair + main gun
+      </label>
+      <label class="range-label" for="weapon-aim-lift">
+        <span>Crosshair height <output id="weapon-aim-lift-value" for="weapon-aim-lift">14</output></span>
+        <input id="weapon-aim-lift" type="range" min="0" max="30" step="1" value="14">
       </label>
     </fieldset>
     <fieldset>
@@ -129,16 +148,19 @@
     </fieldset>
     <div class="menu-help">
       1/2/3/4 switch cameras<br>
-      Drag / scroll to rotate any view<br>
+      Left drag rotates, middle/right drag pans<br>
+      Wheel zooms while panning<br>
       C recenters the camera<br>
       Arrows pan in orbit<br>
+      Space fires main gun when enabled<br>
       Shift+Q hides UI
       <div class="menu-help-flight" hidden>
         <strong>Manual flight</strong><br>
         W / S forward / back<br>
         ↑ / ↓ climb / descend<br>
         A / D bank left / right<br>
-        ← / → yaw left / right
+        ← / → yaw left / right<br>
+        Space fires main gun
       </div>
     </div>
   </div>

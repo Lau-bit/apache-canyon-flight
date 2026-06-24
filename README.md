@@ -29,9 +29,11 @@ browser.
 ## Controls
 
 - `1` / `2` / `3` / `4` — switch cameras
-- Drag / scroll — rotate any view
+- Left drag — rotate any view
+- Middle / right drag — pan while wheel zoom remains active
 - `C` — recenter the camera
 - Arrows — pan in orbit
+- Space — fire the main gun when the crosshair setting is enabled
 - `Shift+Q` — hide the UI
 
 ## Project layout

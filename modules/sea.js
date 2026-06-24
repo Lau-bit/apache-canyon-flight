@@ -527,6 +527,11 @@ function buildCarrier(name, beacons) {
     const j = makeJet({ folded });
     j.position.set(jx, deckY + 0.1, jz);
     j.rotation.y = jr;
+    j.userData.destructiblePlane = {
+      hp: 5,
+      radius: folded ? 5.2 : 6.2,
+      center: new THREE.Vector3(0.5, 1.25, 0),
+    };
     group.add(j);
   }
 

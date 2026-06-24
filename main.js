@@ -32,10 +32,34 @@ camera.position.set(-336, 30, 48); // reframed onto the active base at boot
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
+controls.enablePan = true;
+controls.enableZoom = false;
 controls.rotateSpeed = 0.5;
 controls.minDistance = 3;
 controls.maxDistance = 320;
 controls.maxPolarAngle = Math.PI * 0.495;
+controls.mouseButtons = {
+  LEFT: THREE.MOUSE.ROTATE,
+  MIDDLE: THREE.MOUSE.PAN,
+  RIGHT: THREE.MOUSE.PAN,
+};
+
+const wheelZoomOffset = new THREE.Vector3();
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  const modeScale = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 600 : 1;
+  const zoomScale = Math.exp(e.deltaY * modeScale * 0.001);
+  wheelZoomOffset.copy(camera.position).sub(controls.target);
+  const nextRadius = THREE.MathUtils.clamp(
+    wheelZoomOffset.length() * zoomScale,
+    controls.minDistance,
+    controls.maxDistance,
+  );
+  wheelZoomOffset.setLength(nextRadius);
+  camera.position.copy(controls.target).add(wheelZoomOffset);
+  controls.update();
+}, { passive: false, capture: true });
 
 // ------------------------------------------------------------------- sky ------
 const skyGeo = new THREE.SphereGeometry(1600, 32, 16);
@@ -200,6 +224,7 @@ let canyonState = null;
 let beacons = [];
 let helicopter = null;
 let cinematicStations = [];
+let destructiblePlanes = [];
 
 function disposeGroup(root) {
   root.traverse((child) => {
@@ -262,6 +287,7 @@ function buildWorld(detail) {
 
   buildCinematicStations();
   applyLabelVisibility();
+  collectDestructiblePlanes();
 }
 
 // Full teardown + rebuild when switching scenes.
@@ -279,6 +305,7 @@ function setScene(id) {
   terrainGroup = null;
   staticGroup = null;
   helicopter = null;
+  destructiblePlanes = [];
 
   path = currentScene.makePath();
   buildWorld(sceneDetail);
@@ -302,6 +329,9 @@ let performanceMode = window.localStorage.getItem(lsKey('perf')) === 'true';
 let rendererStats = window.localStorage.getItem(lsKey('stats')) === 'true';
 let showLabels = window.localStorage.getItem(lsKey('labels')) !== 'false';
 let manualControl = window.localStorage.getItem(lsKey('manual')) === 'true';
+let lookOnlyCamera = window.localStorage.getItem(lsKey('lookOnlyCamera')) !== 'false';
+let weaponOverlay = window.localStorage.getItem(lsKey('weaponOverlay')) === 'true';
+let weaponAimLift = num(window.localStorage.getItem(lsKey('weaponAimLift')), 14);
 
 const frameRateIntervals = { native: 0, 60: 1000 / 60, 30: 1000 / 30 };
 const shadowModes = {
@@ -340,6 +370,25 @@ function applyLabelVisibility() {
   });
 }
 
+function collectDestructiblePlanes() {
+  destructiblePlanes = [];
+  worldRoot.traverse((obj) => {
+    const cfg = obj.userData?.destructiblePlane;
+    if (!cfg) return;
+    cfg.hits = cfg.hits ?? 0;
+    cfg.destroyed = Boolean(cfg.destroyed);
+    destructiblePlanes.push({
+      object: obj,
+      center: cfg.center?.clone?.() ?? new THREE.Vector3(),
+      radius: cfg.radius ?? 5,
+      maxHits: cfg.hp ?? 5,
+      hits: cfg.hits,
+      destroyed: cfg.destroyed,
+      burnTimer: 0,
+    });
+  });
+}
+
 function applyRenderQuality() {
   const pr = performanceMode ? 1.0 : Math.min(window.devicePixelRatio, maxPixelRatio);
   renderer.setPixelRatio(pr);
@@ -374,6 +423,14 @@ function setCameraMode(mode) {
   syncCameraInputs();
 }
 cameraInputs.forEach((i) => i.addEventListener('change', () => setCameraMode(i.value)));
+
+const lookOnlyInput = $('look-only-camera');
+lookOnlyInput.checked = lookOnlyCamera;
+lookOnlyInput.addEventListener('change', () => {
+  lookOnlyCamera = lookOnlyInput.checked;
+  window.localStorage.setItem(lsKey('lookOnlyCamera'), String(lookOnlyCamera));
+  requestRecenter();
+});
 
 const sceneSelect = $('scene-select');
 sceneSelect.value = currentScene.id;
@@ -456,6 +513,33 @@ manualInput.addEventListener('change', () => {
   document.body.classList.toggle('manual-control', manualControl);
 });
 
+const weaponInput = $('weapon-overlay');
+const weaponCrosshair = $('weapon-crosshair');
+const hitmarkerEl = $('hitmarker');
+function syncWeaponOverlay() {
+  document.body.classList.toggle('weapon-overlay', weaponOverlay);
+}
+weaponInput.checked = weaponOverlay;
+weaponInput.addEventListener('change', () => {
+  weaponOverlay = weaponInput.checked;
+  gunKeyDown = false;
+  hitmarkerTimer = 0;
+  document.body.classList.remove('hitmarker');
+  window.localStorage.setItem(lsKey('weaponOverlay'), String(weaponOverlay));
+  syncWeaponOverlay();
+});
+
+const weaponAimLiftInput = $('weapon-aim-lift');
+const weaponAimLiftValue = $('weapon-aim-lift-value');
+weaponAimLift = THREE.MathUtils.clamp(weaponAimLift, Number(weaponAimLiftInput.min), Number(weaponAimLiftInput.max));
+weaponAimLiftInput.value = String(weaponAimLift);
+weaponAimLiftValue.textContent = String(weaponAimLift);
+weaponAimLiftInput.addEventListener('input', () => {
+  weaponAimLift = THREE.MathUtils.clamp(num(weaponAimLiftInput.value, 14), Number(weaponAimLiftInput.min), Number(weaponAimLiftInput.max));
+  weaponAimLiftValue.textContent = String(weaponAimLift);
+  window.localStorage.setItem(lsKey('weaponAimLift'), String(weaponAimLift));
+});
+
 const statsInput = $('renderer-stats');
 const statsPanel = document.createElement('div');
 statsPanel.id = 'renderer-stats-panel';
@@ -481,6 +565,7 @@ const routeHeli = $('route-heli');
 const orbitPanKeys = new Set();
 const flightKeys = new Set();
 const FLIGHT_KEYS = new Set(['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+let gunKeyDown = false;
 
 // Build the helicopter's manual-control input from the held flight keys.
 // W/S cyclic pitch (forward/back), ↑/↓ collective (climb/descend), A/D cyclic
@@ -509,6 +594,11 @@ window.addEventListener('keydown', (e) => {
     requestRecenter();
     return;
   }
+  if (e.code === 'Space' && weaponOverlay) {
+    gunKeyDown = true;
+    e.preventDefault();
+    return;
+  }
   // While hand-flying, the flight keys drive the helicopter (and override the
   // orbit arrow-pan, so arrows steer the aircraft instead of the camera).
   if (manualControl && FLIGHT_KEYS.has(key)) {
@@ -524,8 +614,15 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
   orbitPanKeys.delete(e.key);
   flightKeys.delete(e.key.toLowerCase());
+  if (e.code === 'Space') gunKeyDown = false;
 });
-window.addEventListener('blur', () => { orbitPanKeys.clear(); flightKeys.clear(); });
+window.addEventListener('blur', () => {
+  orbitPanKeys.clear();
+  flightKeys.clear();
+  gunKeyDown = false;
+  hitmarkerTimer = 0;
+  document.body.classList.remove('hitmarker');
+});
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -550,12 +647,18 @@ const chaseTurnLookahead = 0.16; // subtle yaw preview while hand-flying
 const chaseTurnExtraLeadMax = 0.18;
 const chaseTurnExtraLeadRate = 0.55;
 const followTarget = new THREE.Vector3();
+const effectiveFollowTarget = new THREE.Vector3();
+const targetWithPan = new THREE.Vector3();
 const desiredCamPos = new THREE.Vector3();
 const camHeading = new THREE.Vector3();
+const effectiveCamHeading = new THREE.Vector3();
 const camDelta = new THREE.Vector3();
+const cameraPanOffset = new THREE.Vector3();
 const tmpFwd = new THREE.Vector3();
 const worldUp = new THREE.Vector3(0, 1, 0);
 const orbitAnchor = new THREE.Vector3();
+const lookOnlyAnchor = new THREE.Vector3();
+const lookOnlyHeading = new THREE.Vector3();
 const sph = new THREE.Spherical();
 const offsetVec = new THREE.Vector3();
 
@@ -563,6 +666,10 @@ let interacting = false; // a mouse button / wheel drag is active
 let recenter = true;
 let chaseTurnExtraLead = 0;
 let lastChaseYawInput = 0;
+let lookOnlyAnchorActive = false;
+let chaseYawReleaseHold = false;
+let chaseYawReleaseTheta = 0;
+let chaseYawReleaseTime = 0;
 
 function shortestAngleTo(from, to) {
   let d = (to - from) % (Math.PI * 2);
@@ -576,9 +683,44 @@ function dampAngle(cur, target, lambda, dt) {
 
 function requestRecenter() {
   recenter = true;
+  cameraPanOffset.set(0, 0, 0);
+  lookOnlyAnchorActive = false;
 }
 controls.addEventListener('start', () => { interacting = true; });
 controls.addEventListener('end', () => { interacting = false; });
+
+function hasDirectionalFlightInput() {
+  const k = flightKeys;
+  return k.has('w') || k.has('s') || k.has('a') || k.has('d')
+    || k.has('arrowleft') || k.has('arrowright');
+}
+
+function shouldHoldFollowTarget(mode) {
+  if (!lookOnlyCamera || mode === 'cockpit' || mode === 'cinematic') return false;
+  if (manualControl && hasDirectionalFlightInput()) return false;
+  return helicopter.currentSpeed < 1.0;
+}
+
+function resolveFollowTarget(mode) {
+  const holdFollow = shouldHoldFollowTarget(mode);
+  if (holdFollow && !lookOnlyAnchorActive) {
+    lookOnlyAnchor.copy(followTarget);
+    lookOnlyHeading.copy(camHeading);
+    if (recenter) cameraPanOffset.set(0, 0, 0);
+    else cameraPanOffset.copy(controls.target).sub(lookOnlyAnchor);
+  } else if (!holdFollow && lookOnlyAnchorActive) {
+    if (recenter) cameraPanOffset.set(0, 0, 0);
+    else cameraPanOffset.copy(controls.target).sub(followTarget);
+  }
+
+  lookOnlyAnchorActive = holdFollow;
+  if (holdFollow) {
+    lookOnlyAnchor.y = followTarget.y;
+    cameraPanOffset.y = 0;
+  }
+  effectiveFollowTarget.copy(holdFollow ? lookOnlyAnchor : followTarget);
+  effectiveCamHeading.copy(holdFollow ? lookOnlyHeading : camHeading);
+}
 
 function computeFraming(mode) {
   const lead = helicopter.getLeadFrame();
@@ -601,29 +743,38 @@ function computeFraming(mode) {
 }
 
 function updateChase(dt) {
-  // Track the heli, preserving the current offset so zoom + tilt persist.
-  camDelta.copy(followTarget).sub(controls.target);
+  // Track the viewed point, preserving user pan as a target offset so pan and
+  // wheel zoom can be used together instead of being erased by follow motion.
+  targetWithPan.copy(effectiveFollowTarget).add(cameraPanOffset);
+  camDelta.copy(targetWithPan).sub(controls.target);
   camera.position.add(camDelta);
-  controls.target.copy(followTarget);
+  controls.target.copy(targetWithPan);
 
   const yawInput = manualControl
     ? (flightKeys.has('arrowleft') ? 1 : 0) - (flightKeys.has('arrowright') ? 1 : 0)
     : 0;
-  if (yawInput && yawInput === lastChaseYawInput) {
+  const previousYawInput = lastChaseYawInput;
+  if (yawInput && yawInput === previousYawInput) {
     chaseTurnExtraLead = Math.min(chaseTurnExtraLeadMax, chaseTurnExtraLead + chaseTurnExtraLeadRate * dt);
   } else {
     chaseTurnExtraLead = 0;
   }
-  lastChaseYawInput = yawInput;
+  if (yawInput) chaseYawReleaseHold = false;
 
   const chaseYaw = yawInput
     ? helicopter.yaw + yawInput * (chaseTurnLookahead + chaseTurnExtraLead) + helicopter.yawVel * 0.1
     : helicopter.yaw;
+  const caughtUpTheta = Math.atan2(-effectiveCamHeading.x, -effectiveCamHeading.z);
   const behindTheta = yawInput
     ? Math.atan2(-Math.sin(chaseYaw), -Math.cos(chaseYaw))
-    : Math.atan2(-camHeading.x, -camHeading.z);
+    : caughtUpTheta;
   offsetVec.copy(camera.position).sub(controls.target);
   sph.setFromVector3(offsetVec);
+  if (!yawInput && previousYawInput) {
+    chaseYawReleaseHold = true;
+    chaseYawReleaseTheta = sph.theta;
+    chaseYawReleaseTime = 0;
+  }
 
   if (recenter) {
     sph.radius = THREE.MathUtils.damp(sph.radius, chaseDefaultRadius, 6, dt);
@@ -635,33 +786,52 @@ function updateChase(dt) {
   } else if (!interacting) {
     // Lead the nose slightly on arrow-yaw. Holding the turn adds a little more
     // lead slowly, so the view anticipates sustained turns without snapping.
-    sph.theta = dampAngle(sph.theta, behindTheta, yawInput ? 5 : 2.2, dt);
+    if (yawInput) {
+      sph.theta = dampAngle(sph.theta, behindTheta, 5, dt);
+    } else if (chaseYawReleaseHold) {
+      chaseYawReleaseTime += dt;
+      const catchDistance = Math.abs(shortestAngleTo(chaseYawReleaseTheta, caughtUpTheta));
+      const catchBlend = 1 - THREE.MathUtils.clamp(catchDistance / 0.34, 0, 1);
+      const catchLambda = THREE.MathUtils.lerp(0.35, 2.2, catchBlend);
+      sph.theta = dampAngle(sph.theta, caughtUpTheta, catchLambda, dt);
+      const caught = Math.abs(shortestAngleTo(sph.theta, caughtUpTheta)) < 0.035;
+      if (caught || chaseYawReleaseTime > 1.2) chaseYawReleaseHold = false;
+    } else if (lookOnlyAnchorActive) {
+      // In look-only idle, let the viewer keep whatever direction they panned
+      // or orbited to instead of quietly pulling the chase cam back behind.
+    } else {
+      sph.theta = dampAngle(sph.theta, behindTheta, 2.2, dt);
+    }
   }
+  lastChaseYawInput = yawInput;
   sph.makeSafe();
   offsetVec.setFromSpherical(sph);
   camera.position.copy(controls.target).add(offsetVec);
   controls.update();
+  cameraPanOffset.copy(controls.target).sub(effectiveFollowTarget);
+  if (lookOnlyAnchorActive) cameraPanOffset.y = 0;
 }
 
 function updateOrbit(dt) {
+  targetWithPan.copy(effectiveFollowTarget).add(cameraPanOffset);
   if (recenter) {
-    controls.target.copy(followTarget);
-    orbitAnchor.copy(followTarget);
+    controls.target.copy(effectiveFollowTarget);
+    orbitAnchor.copy(effectiveFollowTarget);
     camera.position.lerp(desiredCamPos, 1 - Math.exp(-6 * dt));
     if (camera.position.distanceTo(desiredCamPos) < 0.5) recenter = false;
   } else {
     // Shift the whole rig by the heli's movement; the user's view fully persists.
-    camDelta.copy(followTarget).sub(orbitAnchor);
-    orbitAnchor.copy(followTarget);
+    camDelta.copy(targetWithPan).sub(controls.target);
+    orbitAnchor.copy(effectiveFollowTarget);
     if (padTransitionPhases.has(helicopter.phase)) {
       // Release the position lock during pad transitions, but keep the camera
       // AIMED at the heli so it stays centred while it lifts off / settles.
       // Leaving camera.position untouched frees the framing (and arrow pan), and
       // re-syncing the anchor + target means no offset is carried into cruise.
-      controls.target.copy(followTarget);
+      controls.target.copy(targetWithPan);
     } else {
       camera.position.add(camDelta);
-      controls.target.add(camDelta);
+      controls.target.copy(targetWithPan);
     }
   }
 
@@ -678,10 +848,12 @@ function updateOrbit(dt) {
     d.multiplyScalar(40 * dt);
     camera.position.add(d);
     controls.target.add(d);
-    orbitAnchor.add(d);
+    cameraPanOffset.copy(controls.target).sub(effectiveFollowTarget);
   }
 
   controls.update();
+  cameraPanOffset.copy(controls.target).sub(effectiveFollowTarget);
+  if (lookOnlyAnchorActive) cameraPanOffset.y = 0;
 }
 
 function updateCockpit(dt) {
@@ -703,6 +875,7 @@ function updateCinematic(dt) {
 
 function updateCamera(dt) {
   computeFraming(cameraMode);
+  resolveFollowTarget(cameraMode);
   if (cameraMode === 'chase') updateChase(dt);
   else if (cameraMode === 'orbit') updateOrbit(dt);
   else if (cameraMode === 'cockpit') updateCockpit(dt);
@@ -719,6 +892,378 @@ function updateCulling() {
   for (const obj of cullables) {
     const r = obj.userData?.cullRadius ?? 60;
     obj.visible = obj.position.distanceToSquared(cullOrigin) <= maxD + r * r;
+  }
+}
+
+// ------------------------------------------------------------- weapons -------
+const gunMuzzle = new THREE.Vector3();
+const cameraAimDir = new THREE.Vector3();
+const noseAimDir = new THREE.Vector3();
+const targetAimDir = new THREE.Vector3();
+const gunDir = new THREE.Vector3();
+const gunAimPoint = new THREE.Vector3();
+const aimProbe = new THREE.Vector3();
+const projectileDir = new THREE.Vector3();
+const projectileVel = new THREE.Vector3();
+const projectilePrev = new THREE.Vector3();
+const hitboxCenter = new THREE.Vector3();
+const hitSeg = new THREE.Vector3();
+const hitToCenter = new THREE.Vector3();
+const hitPoint = new THREE.Vector3();
+const gunProjectiles = [];
+const impactParticles = [];
+const projectileGeo = new THREE.SphereGeometry(0.08, 8, 6);
+const flameGeo = new THREE.SphereGeometry(1, 8, 6);
+const smokeGeo = new THREE.SphereGeometry(1, 10, 8);
+const projectileMat = new THREE.MeshBasicMaterial({ color: 0xfff2b5 });
+const flameBaseMat = new THREE.MeshBasicMaterial({
+  color: 0xffa22e,
+  transparent: true,
+  opacity: 0.9,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+});
+const smokeBaseMat = new THREE.MeshBasicMaterial({
+  color: 0x4e514d,
+  transparent: true,
+  opacity: 0.35,
+  depthWrite: false,
+});
+let lastGunShotAt = -Infinity;
+let hitmarkerTimer = 0;
+let aimScreenX = window.innerWidth / 2;
+let aimScreenY = window.innerHeight / 2;
+let aimDirReady = false;
+const gunShotInterval = 0.08;
+const projectileSpeed = 430;
+const projectileLife = 1.35;
+const aimMaxDistance = 560;
+const weaponNoseLeadMax = 0.18;
+const weaponAimLiftScale = 0.01;
+const planeEffectStep = 1 / 30;
+
+function findAimImpact(origin, dir, out) {
+  let lastD = 0;
+  for (let i = 1; i <= 80; i++) {
+    const d = (i / 80) * aimMaxDistance;
+    aimProbe.copy(origin).addScaledVector(dir, d);
+    const groundY = currentScene.height(aimProbe.x, aimProbe.z) + 0.18;
+    if (aimProbe.y <= groundY) {
+      let lo = lastD;
+      let hi = d;
+      for (let j = 0; j < 7; j++) {
+        const mid = (lo + hi) * 0.5;
+        aimProbe.copy(origin).addScaledVector(dir, mid);
+        if (aimProbe.y <= currentScene.height(aimProbe.x, aimProbe.z) + 0.18) hi = mid;
+        else lo = mid;
+      }
+      out.copy(origin).addScaledVector(dir, hi);
+      out.y = currentScene.height(out.x, out.z) + 0.22;
+      return true;
+    }
+    lastD = d;
+  }
+
+  out.copy(origin).addScaledVector(dir, aimMaxDistance);
+  return false;
+}
+
+function updateWeaponAim(dt) {
+  camera.getWorldDirection(cameraAimDir);
+  noseAimDir.set(0, 0, 1).applyQuaternion(helicopter.group.quaternion).normalize();
+  const yawInput = manualControl
+    ? (flightKeys.has('arrowleft') ? 1 : 0) - (flightKeys.has('arrowright') ? 1 : 0)
+    : 0;
+  const noseLead = THREE.MathUtils.clamp(helicopter.yawVel * 0.24 + yawInput * 0.08, -weaponNoseLeadMax, weaponNoseLeadMax);
+  noseAimDir.applyAxisAngle(worldUp, noseLead).normalize();
+  const cameraY = THREE.MathUtils.clamp(cameraAimDir.y, -0.98, 0.98);
+  const cameraHorizontal = Math.sqrt(Math.max(1 - cameraY * cameraY, 0.0001));
+  targetAimDir.set(
+    cameraAimDir.x * 0.72 + noseAimDir.x * 0.28,
+    0,
+    cameraAimDir.z * 0.72 + noseAimDir.z * 0.28,
+  );
+  if (targetAimDir.lengthSq() < 1e-5) targetAimDir.set(cameraAimDir.x, 0, cameraAimDir.z);
+  targetAimDir.normalize().multiplyScalar(cameraHorizontal);
+  targetAimDir.y = cameraY;
+  targetAimDir.y += weaponAimLift * weaponAimLiftScale * cameraHorizontal;
+  targetAimDir.normalize();
+  if (!aimDirReady) {
+    gunDir.copy(targetAimDir);
+    aimDirReady = true;
+  } else {
+    gunDir.lerp(targetAimDir, 1 - Math.exp(-7 * dt)).normalize();
+  }
+
+  findAimImpact(camera.position, gunDir, gunAimPoint);
+  aimProbe.copy(gunAimPoint).project(camera);
+  if (Number.isFinite(aimProbe.x) && Number.isFinite(aimProbe.y) && aimProbe.z < 1) {
+    const nextX = THREE.MathUtils.clamp((aimProbe.x * 0.5 + 0.5) * window.innerWidth, 18, window.innerWidth - 18);
+    const nextY = THREE.MathUtils.clamp((-aimProbe.y * 0.5 + 0.5) * window.innerHeight, 18, window.innerHeight - 18);
+    const a = 1 - Math.exp(-10 * dt);
+    aimScreenX += (nextX - aimScreenX) * a;
+    aimScreenY += (nextY - aimScreenY) * a;
+  }
+  weaponCrosshair.style.left = `${aimScreenX}px`;
+  weaponCrosshair.style.top = `${aimScreenY}px`;
+  hitmarkerEl.style.left = `${aimScreenX}px`;
+  hitmarkerEl.style.top = `${aimScreenY}px`;
+}
+
+function emitImpact(pos) {
+  const flameCount = 10;
+  const smokeCount = 14;
+  for (let i = 0; i < flameCount; i++) {
+    const mat = flameBaseMat.clone();
+    const mesh = new THREE.Mesh(flameGeo, mat);
+    mesh.position.copy(pos);
+    const s = 0.45 + Math.random() * 0.9;
+    mesh.scale.setScalar(s);
+    scene.add(mesh);
+    impactParticles.push({
+      mesh,
+      mat,
+      kind: 'impact',
+      age: 0,
+      life: 0.22 + Math.random() * 0.18,
+      grow: 3.8,
+      vel: new THREE.Vector3(
+        (Math.random() - 0.5) * 18,
+        7 + Math.random() * 15,
+        (Math.random() - 0.5) * 18,
+      ),
+    });
+  }
+
+  for (let i = 0; i < smokeCount; i++) {
+    const mat = smokeBaseMat.clone();
+    const mesh = new THREE.Mesh(smokeGeo, mat);
+    mesh.position.copy(pos);
+    const s = 0.7 + Math.random() * 1.3;
+    mesh.scale.setScalar(s);
+    scene.add(mesh);
+    impactParticles.push({
+      mesh,
+      mat,
+      kind: 'impact',
+      age: 0,
+      life: 1.0 + Math.random() * 0.65,
+      grow: 1.6,
+      vel: new THREE.Vector3(
+        (Math.random() - 0.5) * 8,
+        2 + Math.random() * 7,
+        (Math.random() - 0.5) * 8,
+      ),
+    });
+  }
+}
+
+function emitPlaneHitEffect(pos, phase = 'hit') {
+  const exploding = phase === 'explode';
+  const burning = phase === 'burn';
+  const flameCount = exploding ? 20 : burning ? 3 : 5;
+  const smokeCount = exploding ? 24 : burning ? 5 : 4;
+  for (let i = 0; i < flameCount; i++) {
+    const mat = flameBaseMat.clone();
+    const mesh = new THREE.Mesh(flameGeo, mat);
+    mesh.position.copy(pos);
+    const flameScale = exploding ? 0.55 + Math.random() * 1.2
+      : burning ? 0.2 + Math.random() * 0.2
+        : 0.25 + Math.random() * 0.45;
+    mesh.scale.setScalar(flameScale);
+    scene.add(mesh);
+    impactParticles.push({
+      mesh,
+      mat,
+      kind: exploding || burning ? 'plane' : 'impact',
+      age: 0,
+      tick: 0,
+      life: exploding ? 0.3 + Math.random() * 0.25
+        : burning ? 0.7 + Math.random() * 0.35
+          : 0.14 + Math.random() * 0.25,
+      grow: exploding ? 4.2 : burning ? 0.18 : 2.2,
+      vel: new THREE.Vector3(
+        (Math.random() - 0.5) * (exploding ? 18 : burning ? 0.8 : 8),
+        (exploding ? 5 : burning ? 0.35 : 2) + Math.random() * (exploding ? 16 : burning ? 0.75 : 6),
+        (Math.random() - 0.5) * (exploding ? 18 : burning ? 0.8 : 8),
+      ),
+    });
+  }
+
+  for (let i = 0; i < smokeCount; i++) {
+    const mat = smokeBaseMat.clone();
+    const mesh = new THREE.Mesh(smokeGeo, mat);
+    mesh.position.copy(pos);
+    if (burning) {
+      mesh.position.y += 0.25 + Math.random() * 0.8;
+      const smokeScale = 0.28 + Math.random() * 0.22;
+      mesh.scale.setScalar(smokeScale);
+    } else {
+      mesh.scale.setScalar(exploding ? 0.8 + Math.random() * 1.6 : 0.35 + Math.random() * 0.55);
+    }
+    scene.add(mesh);
+    impactParticles.push({
+      mesh,
+      mat,
+      kind: exploding || burning ? 'plane' : 'impact',
+      age: 0,
+      tick: 0,
+      life: exploding ? 1.2 + Math.random() * 0.9
+        : burning ? 4.4 + Math.random() * 2.3
+          : 0.45 + Math.random() * 0.9,
+      grow: exploding ? 1.8 : burning ? 0.22 : 1.0,
+      growCap: burning ? 2.0 + Math.random() * 1.0 : null,
+      gravity: burning ? 0.15 : 5.5,
+      vel: new THREE.Vector3(
+        (Math.random() - 0.5) * (exploding ? 8 : burning ? 0.35 : 4),
+        (exploding ? 3 : burning ? 1.32 : 1) + Math.random() * (exploding ? 8 : burning ? 0.9 : 3),
+        (Math.random() - 0.5) * (exploding ? 8 : burning ? 0.35 : 4),
+      ),
+    });
+  }
+}
+
+function triggerHitmarker() {
+  hitmarkerTimer = 0.11;
+  document.body.classList.add('hitmarker');
+}
+
+function markPlaneDestroyed(target, pos) {
+  target.destroyed = true;
+  target.object.userData.destructiblePlane.destroyed = true;
+  target.object.traverse((child) => {
+    if (!child.isMesh || !child.material) return;
+    child.material = child.material.clone();
+    child.material.color?.multiplyScalar(0.28);
+    child.material.emissive?.setHex?.(0x220600);
+    if ('emissiveIntensity' in child.material) child.material.emissiveIntensity = 0.5;
+    child.castShadow = true;
+  });
+  target.object.rotation.z += (Math.random() - 0.5) * 0.22;
+  target.object.rotation.x += (Math.random() - 0.5) * 0.12;
+  emitPlaneHitEffect(pos, 'explode');
+}
+
+function damagePlane(target, pos) {
+  if (target.destroyed) return;
+  target.hits += 1;
+  target.object.userData.destructiblePlane.hits = target.hits;
+  triggerHitmarker();
+  emitPlaneHitEffect(pos, 'hit');
+  if (target.hits >= target.maxHits) markPlaneDestroyed(target, pos);
+}
+
+function projectilePlaneHit(start, end) {
+  hitSeg.copy(end).sub(start);
+  const lenSq = hitSeg.lengthSq();
+  if (lenSq < 1e-6) return null;
+
+  let best = null;
+  let bestT = Infinity;
+  for (const target of destructiblePlanes) {
+    if (target.destroyed) continue;
+    target.object.localToWorld(hitboxCenter.copy(target.center));
+    hitToCenter.copy(hitboxCenter).sub(start);
+    const t = THREE.MathUtils.clamp(hitToCenter.dot(hitSeg) / lenSq, 0, 1);
+    hitPoint.copy(start).addScaledVector(hitSeg, t);
+    if (hitPoint.distanceToSquared(hitboxCenter) <= target.radius * target.radius && t < bestT) {
+      bestT = t;
+      best = { target, point: hitPoint.clone() };
+    }
+  }
+  return best;
+}
+
+function emitGunProjectile() {
+  gunMuzzle.set(0, -0.95, 4.65).applyQuaternion(helicopter.group.quaternion).add(helicopter.group.position);
+  projectileDir.copy(gunAimPoint).sub(gunMuzzle);
+  if (projectileDir.lengthSq() < 1e-4) projectileDir.copy(gunDir);
+  else projectileDir.normalize();
+
+  const mesh = new THREE.Mesh(projectileGeo, projectileMat);
+  mesh.position.copy(gunMuzzle);
+  mesh.scale.set(1, 1, 4.5);
+  mesh.quaternion.setFromUnitVectors(worldUp, projectileDir);
+  mesh.renderOrder = 10;
+  scene.add(mesh);
+  projectileVel.copy(projectileDir).multiplyScalar(projectileSpeed);
+  gunProjectiles.push({ mesh, vel: projectileVel.clone(), age: 0 });
+}
+
+function updateWeapons(dt, t) {
+  updateWeaponAim(dt);
+  if (weaponOverlay && gunKeyDown && t - lastGunShotAt >= gunShotInterval) {
+    emitGunProjectile();
+    lastGunShotAt = t;
+  }
+
+  for (let i = gunProjectiles.length - 1; i >= 0; i--) {
+    const p = gunProjectiles[i];
+    p.age += dt;
+    projectilePrev.copy(p.mesh.position);
+    p.mesh.position.addScaledVector(p.vel, dt);
+    const planeHit = projectilePlaneHit(projectilePrev, p.mesh.position);
+    if (planeHit) {
+      damagePlane(planeHit.target, planeHit.point);
+      scene.remove(p.mesh);
+      gunProjectiles.splice(i, 1);
+      continue;
+    }
+    const groundY = currentScene.height(p.mesh.position.x, p.mesh.position.z) + 0.2;
+    if (p.mesh.position.y <= groundY || p.age >= projectileLife) {
+      if (p.mesh.position.y <= groundY) {
+        p.mesh.position.y = groundY;
+        emitImpact(p.mesh.position);
+      }
+      scene.remove(p.mesh);
+      gunProjectiles.splice(i, 1);
+    }
+  }
+
+  for (const target of destructiblePlanes) {
+    if (!target.destroyed) continue;
+    target.burnTimer -= dt;
+    if (target.burnTimer <= 0) {
+      target.object.localToWorld(hitboxCenter.copy(target.center));
+      hitboxCenter.y += 0.8 + Math.random() * 0.8;
+      emitPlaneHitEffect(hitboxCenter, 'burn');
+      target.burnTimer = 0.28 + Math.random() * 0.16;
+    }
+  }
+
+  if (hitmarkerTimer > 0) {
+    hitmarkerTimer -= dt;
+    if (hitmarkerTimer <= 0) document.body.classList.remove('hitmarker');
+  }
+
+  for (let i = impactParticles.length - 1; i >= 0; i--) {
+    const p = impactParticles[i];
+    p.age += dt;
+    const stepDt = p.kind === 'plane'
+      ? (() => {
+          p.tick = (p.tick ?? 0) + dt;
+          if (p.tick < planeEffectStep && p.age < p.life) return 0;
+          const stepped = p.tick;
+          p.tick = 0;
+          return stepped;
+        })()
+      : dt;
+    if (stepDt > 0) {
+      p.mesh.position.addScaledVector(p.vel, stepDt);
+      p.vel.y -= (p.gravity ?? 5.5) * stepDt;
+      if (p.growCap) {
+        const nextScale = Math.min(p.growCap, p.mesh.scale.x + p.grow * stepDt);
+        p.mesh.scale.setScalar(nextScale);
+      }
+      else if (p.growVec) p.mesh.scale.addScaledVector(p.growVec, stepDt);
+      else p.mesh.scale.addScalar(p.grow * stepDt);
+    }
+    p.mat.opacity = Math.max(0, p.mat.opacity * (1 - dt / Math.max(p.life - p.age + dt, 0.05)));
+    if (p.age >= p.life) {
+      scene.remove(p.mesh);
+      p.mat.dispose();
+      impactParticles.splice(i, 1);
+    }
   }
 }
 
@@ -786,6 +1331,7 @@ function animate(now = 0) {
   for (const m of beacons) m.emissiveIntensity = blink;
 
   updateCamera(dt);
+  updateWeapons(dt, t);
 
   updateCulling();
   updateHud(now);
@@ -802,6 +1348,7 @@ applyRenderQuality();
 buildWorld(sceneDetail);
 syncCameraInputs();
 document.body.classList.toggle('manual-control', manualControl);
+syncWeaponOverlay();
 controls.enabled = true;
 requestRecenter();
 animate();
