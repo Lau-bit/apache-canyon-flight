@@ -33,6 +33,7 @@
 </div>
 
 <div id="reticle"></div>
+<div id="speedometer" aria-hidden="true"><span id="speedometer-val">0</span><span class="speedometer-unit">kt</span></div>
 <div id="weapon-crosshair"></div>
 <div id="hitmarker" aria-hidden="true">
   <span></span>
@@ -109,6 +110,10 @@
         <span>Crosshair height <output id="weapon-aim-lift-value" for="weapon-aim-lift">14</output></span>
         <input id="weapon-aim-lift" type="range" min="0" max="30" step="1" value="14">
       </label>
+      <label>
+        <input id="speedometer-toggle" type="checkbox" name="speedometer">
+        Speedometer <span class="tag">stays UI-off</span>
+      </label>
     </fieldset>
     <fieldset>
       <legend>Rendering</legend>
@@ -145,6 +150,71 @@
         <input id="renderer-stats" type="checkbox" name="renderer-stats">
         Renderer stats
       </label>
+    </fieldset>
+    <fieldset>
+      <legend>Dev handling <span class="tag">manual</span></legend>
+      <p class="dev-note">Hand-flying motion model (Manual flight only).</p>
+      <label class="range-label" for="dev-top-speed">
+        <span>Top speed <output id="dev-top-speed-value" for="dev-top-speed">18</output></span>
+        <input id="dev-top-speed" type="range" min="4" max="48" step="1" value="18">
+      </label>
+      <label class="range-label" for="dev-accel">
+        <span>Acceleration <output id="dev-accel-value" for="dev-accel">26</output></span>
+        <input id="dev-accel" type="range" min="4" max="90" step="1" value="26">
+      </label>
+      <label class="range-label" for="dev-fwd-stick">
+        <span>Fwd accel stickiness <output id="dev-fwd-stick-value" for="dev-fwd-stick">0.00</output></span>
+        <input id="dev-fwd-stick" type="range" min="0" max="2" step="0.01" value="0">
+      </label>
+      <label class="range-label" for="dev-side-stick">
+        <span>Side accel stickiness <output id="dev-side-stick-value" for="dev-side-stick">0.00</output></span>
+        <input id="dev-side-stick" type="range" min="0" max="2" step="0.01" value="0">
+      </label>
+      <label class="range-label" for="dev-decel">
+        <span>Deceleration <output id="dev-decel-value" for="dev-decel">1.5</output></span>
+        <input id="dev-decel" type="range" min="0.3" max="6" step="0.1" value="1.5">
+      </label>
+      <label class="range-label" for="dev-inertia">
+        <span>Motion inertia <output id="dev-inertia-value" for="dev-inertia">0.67</output></span>
+        <input id="dev-inertia" type="range" min="0.1" max="8" step="0.05" value="0.67">
+      </label>
+      <label>
+        <input id="dev-decel-anim" type="checkbox" name="dev-decel-anim">
+        Deceleration flare animation
+      </label>
+      <label class="range-label" for="dev-flare">
+        <span>Flare intensity <output id="dev-flare-value" for="dev-flare">0.34</output></span>
+        <input id="dev-flare" type="range" min="0" max="1.5" step="0.01" value="0.34">
+      </label>
+      <label class="range-label" for="dev-hover-vert">
+        <span>Hover bob (up/down) <output id="dev-hover-vert-value" for="dev-hover-vert">0.06</output></span>
+        <input id="dev-hover-vert" type="range" min="0" max="1.5" step="0.01" value="0.06">
+      </label>
+      <label class="range-label" for="dev-hover-horiz">
+        <span>Hover sway (lateral) <output id="dev-hover-horiz-value" for="dev-hover-horiz">0.00</output></span>
+        <input id="dev-hover-horiz" type="range" min="0" max="1.5" step="0.01" value="0">
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Dev physics <span class="tag">visual</span></legend>
+      <p class="dev-note">Tunes the airframe's visual bank &amp; pitch only — the flight path and handling are unchanged. Higher inertia = laggier, heavier tilt.</p>
+      <label class="range-label" for="dev-bank-sens">
+        <span>Bank sensitivity <output id="dev-bank-sens-value" for="dev-bank-sens">1.00</output></span>
+        <input id="dev-bank-sens" type="range" min="0" max="2.5" step="0.05" value="1">
+      </label>
+      <label class="range-label" for="dev-bank-inertia">
+        <span>Bank inertia <output id="dev-bank-inertia-value" for="dev-bank-inertia">0.24</output></span>
+        <input id="dev-bank-inertia" type="range" min="0.05" max="1" step="0.01" value="0.24">
+      </label>
+      <label class="range-label" for="dev-pitch-sens">
+        <span>Pitch sensitivity <output id="dev-pitch-sens-value" for="dev-pitch-sens">1.00</output></span>
+        <input id="dev-pitch-sens" type="range" min="0" max="2.5" step="0.05" value="1">
+      </label>
+      <label class="range-label" for="dev-pitch-inertia">
+        <span>Pitch inertia <output id="dev-pitch-inertia-value" for="dev-pitch-inertia">0.38</output></span>
+        <input id="dev-pitch-inertia" type="range" min="0.05" max="1" step="0.01" value="0.38">
+      </label>
+      <button id="dev-physics-reset" type="button" class="dev-reset">Reset to defaults</button>
     </fieldset>
     <div class="menu-help">
       1/2/3/4 switch cameras<br>

@@ -175,8 +175,17 @@ function placeScatter(root, cullables, detail) {
   }
   foam.instanceMatrix.needsUpdate = true;
 
+  // These instanced fields are scattered across the whole sea but, as far as the
+  // engine is concerned, each is a single object sitting at the world origin with
+  // a tiny (one-quad) bounding sphere. That makes both three.js' default frustum
+  // cull and the scene's distance culler pop the ENTIRE field on/off depending on
+  // where the camera looks / how far it is from the origin — the foam vanishing
+  // "from some angles". Draw them unconditionally (one instanced call each, and
+  // distant instances are hidden by fog anyway) instead of enrolling them in the
+  // point-object cullers.
+  for (const m of [buoys, caps, foam]) m.frustumCulled = false;
+
   root.add(buoys, caps, foam);
-  cullables.push(buoys, caps, foam);
 }
 
 // --- Shared materials for the steel/island structures -----------------------

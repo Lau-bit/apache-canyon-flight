@@ -283,6 +283,7 @@ function buildWorld(detail) {
   helicopter.setCruiseSpeed(cruiseSpeed);
   helicopter.setAutoLoop(autoLoop);
   helicopter.setManualControl(manualControl);
+  applyDevPhysics();
   worldRoot.add(helicopter.group);
 
   buildCinematicStations();
@@ -332,6 +333,34 @@ let manualControl = window.localStorage.getItem(lsKey('manual')) === 'true';
 let lookOnlyCamera = window.localStorage.getItem(lsKey('lookOnlyCamera')) !== 'false';
 let weaponOverlay = window.localStorage.getItem(lsKey('weaponOverlay')) === 'true';
 let weaponAimLift = num(window.localStorage.getItem(lsKey('weaponAimLift')), 14);
+let showSpeedometer = window.localStorage.getItem(lsKey('speedometer')) === 'true';
+
+// Dev physics: visual bank/pitch tuning. Defaults reproduce the current
+// hand-tuned look; inertia values are settle-time constants (seconds), so the
+// damping rate the helicopter uses is 1/inertia (~4.2 bank, ~2.6 pitch).
+const DEV_PHYSICS_DEFAULTS = { bankSensitivity: 1, bankInertia: 0.24, pitchSensitivity: 1, pitchInertia: 0.38 };
+let devBankSensitivity = num(window.localStorage.getItem(lsKey('devBankSens')), DEV_PHYSICS_DEFAULTS.bankSensitivity);
+let devBankInertia = num(window.localStorage.getItem(lsKey('devBankInertia')), DEV_PHYSICS_DEFAULTS.bankInertia);
+let devPitchSensitivity = num(window.localStorage.getItem(lsKey('devPitchSens')), DEV_PHYSICS_DEFAULTS.pitchSensitivity);
+let devPitchInertia = num(window.localStorage.getItem(lsKey('devPitchInertia')), DEV_PHYSICS_DEFAULTS.pitchInertia);
+
+// Dev handling: hand-flying motion model (manual flight only). Defaults match
+// the current feel — top speed ≈ terminal of the old thrust/drag model, motion
+// inertia is a coast time constant (s) whose reciprocal is the in-motion drag.
+const DEV_HANDLING_DEFAULTS = {
+  topSpeed: 18, accel: 26, decel: 1.5, inertia: 0.67, flareIntensity: 0.34,
+  fwdStick: 0, sideStick: 0, hoverVert: 0.06, hoverHoriz: 0, decelAnimation: false,
+};
+let devTopSpeed = num(window.localStorage.getItem(lsKey('devTopSpeed')), DEV_HANDLING_DEFAULTS.topSpeed);
+let devAccel = num(window.localStorage.getItem(lsKey('devAccel')), DEV_HANDLING_DEFAULTS.accel);
+let devDecel = num(window.localStorage.getItem(lsKey('devDecel')), DEV_HANDLING_DEFAULTS.decel);
+let devInertia = num(window.localStorage.getItem(lsKey('devInertia')), DEV_HANDLING_DEFAULTS.inertia);
+let devFlare = num(window.localStorage.getItem(lsKey('devFlare')), DEV_HANDLING_DEFAULTS.flareIntensity);
+let devFwdStick = num(window.localStorage.getItem(lsKey('devFwdStick')), DEV_HANDLING_DEFAULTS.fwdStick);
+let devSideStick = num(window.localStorage.getItem(lsKey('devSideStick')), DEV_HANDLING_DEFAULTS.sideStick);
+let devHoverVert = num(window.localStorage.getItem(lsKey('devHoverVert')), DEV_HANDLING_DEFAULTS.hoverVert);
+let devHoverHoriz = num(window.localStorage.getItem(lsKey('devHoverHoriz')), DEV_HANDLING_DEFAULTS.hoverHoriz);
+let devDecelAnim = window.localStorage.getItem(lsKey('devDecelAnim')) === 'true';
 
 const frameRateIntervals = { native: 0, 60: 1000 / 60, 30: 1000 / 30 };
 const shadowModes = {
@@ -540,6 +569,18 @@ weaponAimLiftInput.addEventListener('input', () => {
   window.localStorage.setItem(lsKey('weaponAimLift'), String(weaponAimLift));
 });
 
+const speedometerInput = $('speedometer-toggle');
+const speedometerVal = $('speedometer-val');
+function syncSpeedometer() {
+  document.body.classList.toggle('speedometer', showSpeedometer);
+}
+speedometerInput.checked = showSpeedometer;
+speedometerInput.addEventListener('change', () => {
+  showSpeedometer = speedometerInput.checked;
+  window.localStorage.setItem(lsKey('speedometer'), String(showSpeedometer));
+  syncSpeedometer();
+});
+
 const statsInput = $('renderer-stats');
 const statsPanel = document.createElement('div');
 statsPanel.id = 'renderer-stats-panel';
@@ -551,6 +592,201 @@ statsInput.addEventListener('change', () => {
   window.localStorage.setItem(lsKey('stats'), String(rendererStats));
   statsPanel.hidden = !rendererStats;
 });
+
+// ---- Dev physics: live-tune the manual motion model + the visual bank/pitch.
+// The Reset button restores every control below to its default. ----
+const devBankSensInput = $('dev-bank-sens');
+const devBankSensValue = $('dev-bank-sens-value');
+const devBankInertiaInput = $('dev-bank-inertia');
+const devBankInertiaValue = $('dev-bank-inertia-value');
+const devPitchSensInput = $('dev-pitch-sens');
+const devPitchSensValue = $('dev-pitch-sens-value');
+const devPitchInertiaInput = $('dev-pitch-inertia');
+const devPitchInertiaValue = $('dev-pitch-inertia-value');
+
+const devTopSpeedInput = $('dev-top-speed');
+const devTopSpeedValue = $('dev-top-speed-value');
+const devAccelInput = $('dev-accel');
+const devAccelValue = $('dev-accel-value');
+const devDecelInput = $('dev-decel');
+const devDecelValue = $('dev-decel-value');
+const devInertiaInput = $('dev-inertia');
+const devInertiaValue = $('dev-inertia-value');
+const devFlareInput = $('dev-flare');
+const devFlareValue = $('dev-flare-value');
+const devFwdStickInput = $('dev-fwd-stick');
+const devFwdStickValue = $('dev-fwd-stick-value');
+const devSideStickInput = $('dev-side-stick');
+const devSideStickValue = $('dev-side-stick-value');
+const devHoverVertInput = $('dev-hover-vert');
+const devHoverVertValue = $('dev-hover-vert-value');
+const devHoverHorizInput = $('dev-hover-horiz');
+const devHoverHorizValue = $('dev-hover-horiz-value');
+const devDecelAnimInput = $('dev-decel-anim');
+
+function applyDevPhysics() {
+  helicopter?.setVisualPhysics({
+    bankSensitivity: devBankSensitivity,
+    bankInertia: devBankInertia,
+    pitchSensitivity: devPitchSensitivity,
+    pitchInertia: devPitchInertia,
+  });
+  helicopter?.setManualPhysics({
+    topSpeed: devTopSpeed,
+    accel: devAccel,
+    decel: devDecel,
+    inertia: devInertia,
+    flareIntensity: devFlare,
+    fwdStick: devFwdStick,
+    sideStick: devSideStick,
+    hoverVert: devHoverVert,
+    hoverHoriz: devHoverHoriz,
+    decelAnimation: devDecelAnim,
+  });
+}
+
+function syncDevPhysicsInputs() {
+  devBankSensInput.value = String(devBankSensitivity);
+  devBankSensValue.textContent = devBankSensitivity.toFixed(2);
+  devBankInertiaInput.value = String(devBankInertia);
+  devBankInertiaValue.textContent = devBankInertia.toFixed(2);
+  devPitchSensInput.value = String(devPitchSensitivity);
+  devPitchSensValue.textContent = devPitchSensitivity.toFixed(2);
+  devPitchInertiaInput.value = String(devPitchInertia);
+  devPitchInertiaValue.textContent = devPitchInertia.toFixed(2);
+  devTopSpeedInput.value = String(devTopSpeed);
+  devTopSpeedValue.textContent = devTopSpeed.toFixed(0);
+  devAccelInput.value = String(devAccel);
+  devAccelValue.textContent = devAccel.toFixed(0);
+  devDecelInput.value = String(devDecel);
+  devDecelValue.textContent = devDecel.toFixed(1);
+  devInertiaInput.value = String(devInertia);
+  devInertiaValue.textContent = devInertia.toFixed(2);
+  devFlareInput.value = String(devFlare);
+  devFlareValue.textContent = devFlare.toFixed(2);
+  devFwdStickInput.value = String(devFwdStick);
+  devFwdStickValue.textContent = devFwdStick.toFixed(2);
+  devSideStickInput.value = String(devSideStick);
+  devSideStickValue.textContent = devSideStick.toFixed(2);
+  devHoverVertInput.value = String(devHoverVert);
+  devHoverVertValue.textContent = devHoverVert.toFixed(2);
+  devHoverHorizInput.value = String(devHoverHoriz);
+  devHoverHorizValue.textContent = devHoverHoriz.toFixed(2);
+  devDecelAnimInput.checked = devDecelAnim;
+}
+
+devBankSensInput.addEventListener('input', () => {
+  devBankSensitivity = num(devBankSensInput.value, DEV_PHYSICS_DEFAULTS.bankSensitivity);
+  devBankSensValue.textContent = devBankSensitivity.toFixed(2);
+  window.localStorage.setItem(lsKey('devBankSens'), String(devBankSensitivity));
+  applyDevPhysics();
+});
+devBankInertiaInput.addEventListener('input', () => {
+  devBankInertia = num(devBankInertiaInput.value, DEV_PHYSICS_DEFAULTS.bankInertia);
+  devBankInertiaValue.textContent = devBankInertia.toFixed(2);
+  window.localStorage.setItem(lsKey('devBankInertia'), String(devBankInertia));
+  applyDevPhysics();
+});
+devPitchSensInput.addEventListener('input', () => {
+  devPitchSensitivity = num(devPitchSensInput.value, DEV_PHYSICS_DEFAULTS.pitchSensitivity);
+  devPitchSensValue.textContent = devPitchSensitivity.toFixed(2);
+  window.localStorage.setItem(lsKey('devPitchSens'), String(devPitchSensitivity));
+  applyDevPhysics();
+});
+devPitchInertiaInput.addEventListener('input', () => {
+  devPitchInertia = num(devPitchInertiaInput.value, DEV_PHYSICS_DEFAULTS.pitchInertia);
+  devPitchInertiaValue.textContent = devPitchInertia.toFixed(2);
+  window.localStorage.setItem(lsKey('devPitchInertia'), String(devPitchInertia));
+  applyDevPhysics();
+});
+
+devTopSpeedInput.addEventListener('input', () => {
+  devTopSpeed = num(devTopSpeedInput.value, DEV_HANDLING_DEFAULTS.topSpeed);
+  devTopSpeedValue.textContent = devTopSpeed.toFixed(0);
+  window.localStorage.setItem(lsKey('devTopSpeed'), String(devTopSpeed));
+  applyDevPhysics();
+});
+devAccelInput.addEventListener('input', () => {
+  devAccel = num(devAccelInput.value, DEV_HANDLING_DEFAULTS.accel);
+  devAccelValue.textContent = devAccel.toFixed(0);
+  window.localStorage.setItem(lsKey('devAccel'), String(devAccel));
+  applyDevPhysics();
+});
+devDecelInput.addEventListener('input', () => {
+  devDecel = num(devDecelInput.value, DEV_HANDLING_DEFAULTS.decel);
+  devDecelValue.textContent = devDecel.toFixed(1);
+  window.localStorage.setItem(lsKey('devDecel'), String(devDecel));
+  applyDevPhysics();
+});
+devInertiaInput.addEventListener('input', () => {
+  devInertia = num(devInertiaInput.value, DEV_HANDLING_DEFAULTS.inertia);
+  devInertiaValue.textContent = devInertia.toFixed(2);
+  window.localStorage.setItem(lsKey('devInertia'), String(devInertia));
+  applyDevPhysics();
+});
+devFlareInput.addEventListener('input', () => {
+  devFlare = num(devFlareInput.value, DEV_HANDLING_DEFAULTS.flareIntensity);
+  devFlareValue.textContent = devFlare.toFixed(2);
+  window.localStorage.setItem(lsKey('devFlare'), String(devFlare));
+  applyDevPhysics();
+});
+devFwdStickInput.addEventListener('input', () => {
+  devFwdStick = num(devFwdStickInput.value, DEV_HANDLING_DEFAULTS.fwdStick);
+  devFwdStickValue.textContent = devFwdStick.toFixed(2);
+  window.localStorage.setItem(lsKey('devFwdStick'), String(devFwdStick));
+  applyDevPhysics();
+});
+devSideStickInput.addEventListener('input', () => {
+  devSideStick = num(devSideStickInput.value, DEV_HANDLING_DEFAULTS.sideStick);
+  devSideStickValue.textContent = devSideStick.toFixed(2);
+  window.localStorage.setItem(lsKey('devSideStick'), String(devSideStick));
+  applyDevPhysics();
+});
+devHoverVertInput.addEventListener('input', () => {
+  devHoverVert = num(devHoverVertInput.value, DEV_HANDLING_DEFAULTS.hoverVert);
+  devHoverVertValue.textContent = devHoverVert.toFixed(2);
+  window.localStorage.setItem(lsKey('devHoverVert'), String(devHoverVert));
+  applyDevPhysics();
+});
+devHoverHorizInput.addEventListener('input', () => {
+  devHoverHoriz = num(devHoverHorizInput.value, DEV_HANDLING_DEFAULTS.hoverHoriz);
+  devHoverHorizValue.textContent = devHoverHoriz.toFixed(2);
+  window.localStorage.setItem(lsKey('devHoverHoriz'), String(devHoverHoriz));
+  applyDevPhysics();
+});
+devDecelAnimInput.addEventListener('change', () => {
+  devDecelAnim = devDecelAnimInput.checked;
+  window.localStorage.setItem(lsKey('devDecelAnim'), String(devDecelAnim));
+  applyDevPhysics();
+});
+
+$('dev-physics-reset').addEventListener('click', () => {
+  devBankSensitivity = DEV_PHYSICS_DEFAULTS.bankSensitivity;
+  devBankInertia = DEV_PHYSICS_DEFAULTS.bankInertia;
+  devPitchSensitivity = DEV_PHYSICS_DEFAULTS.pitchSensitivity;
+  devPitchInertia = DEV_PHYSICS_DEFAULTS.pitchInertia;
+  devTopSpeed = DEV_HANDLING_DEFAULTS.topSpeed;
+  devAccel = DEV_HANDLING_DEFAULTS.accel;
+  devDecel = DEV_HANDLING_DEFAULTS.decel;
+  devInertia = DEV_HANDLING_DEFAULTS.inertia;
+  devFlare = DEV_HANDLING_DEFAULTS.flareIntensity;
+  devFwdStick = DEV_HANDLING_DEFAULTS.fwdStick;
+  devSideStick = DEV_HANDLING_DEFAULTS.sideStick;
+  devHoverVert = DEV_HANDLING_DEFAULTS.hoverVert;
+  devHoverHoriz = DEV_HANDLING_DEFAULTS.hoverHoriz;
+  devDecelAnim = DEV_HANDLING_DEFAULTS.decelAnimation;
+  for (const [k, v] of [
+    ['devBankSens', devBankSensitivity], ['devBankInertia', devBankInertia],
+    ['devPitchSens', devPitchSensitivity], ['devPitchInertia', devPitchInertia],
+    ['devTopSpeed', devTopSpeed], ['devAccel', devAccel], ['devDecel', devDecel],
+    ['devInertia', devInertia], ['devFlare', devFlare], ['devFwdStick', devFwdStick],
+    ['devSideStick', devSideStick], ['devHoverVert', devHoverVert],
+    ['devHoverHoriz', devHoverHoriz], ['devDecelAnim', devDecelAnim],
+  ]) window.localStorage.setItem(lsKey(k), String(v));
+  syncDevPhysicsInputs();
+  applyDevPhysics();
+});
+syncDevPhysicsInputs();
 
 // HUD elements.
 const hudSpeed = $('hud-speed');
@@ -1277,6 +1513,7 @@ function updateHud(now) {
   const hdg = Math.round(helicopter.headingDeg).toString().padStart(3, '0');
   const nm = (helicopter.rangeToDestNm / 60).toFixed(1);
   hudSpeed.textContent = String(kt);
+  speedometerVal.textContent = String(kt);
   hudAlt.textContent = String(ft);
   hudHdg.textContent = hdg;
   hudRange.textContent = nm;
@@ -1349,6 +1586,7 @@ buildWorld(sceneDetail);
 syncCameraInputs();
 document.body.classList.toggle('manual-control', manualControl);
 syncWeaponOverlay();
+syncSpeedometer();
 controls.enabled = true;
 requestRecenter();
 animate();

@@ -331,6 +331,15 @@ export class Helicopter {
     this._bankSignal = 0;     // anticipated turn rate (rad/s) driving the bank
     this.maxLean = 0.22;      // rad — nose-down lean at high airspeed
 
+    // Visual-attitude tuning (dev controls). These scale/smooth ONLY the
+    // displayed bank & pitch of the airframe — never the flight path, the
+    // hand-flying handling, or the world velocity. setVisualPhysics() overrides
+    // them live from the dev settings panel.
+    this.bankSensitivity = 1;  // multiplies the bank target angle
+    this.bankLambda = 4.2;     // roll damping rate (higher = snappier, less lag)
+    this.pitchSensitivity = 1; // multiplies the pitch target angle
+    this.pitchLambda = 2.6;    // pitch damping rate
+
     // Rotor / effects.
     this.rotorRpm = 0;
     this.rotorAngle = 0;
@@ -356,6 +365,18 @@ export class Helicopter {
     this.manualMaxClimb = 18;           // m/s vertical at full collective
     this.manualAccel = 26;              // m/s^2 horizontal push from cyclic
     this.manualMaxTilt = 0.4;           // rad cyclic pitch tilt at full input
+    this.manualTopSpeed = 18;           // m/s horizontal speed cap
+    this.manualDecel = 1.5;             // drag rate (1/s) when the cyclic is released
+    this.manualMoveDrag = 1.5;          // drag rate (1/s) while a cyclic input is held
+    this.decelAnimation = false;        // sim-like nose-up flare while decelerating
+    this.decelFlare = 0.34;             // rad — max nose-up/down flare angle on release
+    this.manualFwdStick = 0;            // s — ramp-in time for forward accel ("sticky air")
+    this.manualSideStick = 0;           // s — ramp-in time for sideways accel
+    this.hoverVert = 0.06;              // m — vertical hover-bob amplitude
+    this.hoverHoriz = 0;                // m — lateral hover-sway amplitude
+    this._fwdSpool = 0;                 // 0..1 accel ramp state (forward)
+    this._sideSpool = 0;                // 0..1 accel ramp state (sideways)
+    this._upSpool = 0;                  // 0..1 climb ramp state (up only; down is immediate)
 
     // Initialise sitting on Base Alpha, facing Bravo.
     const start = path.getStart();
@@ -373,6 +394,34 @@ export class Helicopter {
     this.autoLoop = Boolean(on);
   }
 
+  // Live-tune the VISUAL bank/pitch response from the dev panel. Inertia is a
+  // settle time constant in seconds; the damping rate is its reciprocal, so a
+  // larger inertia = a laggier, heavier-feeling tilt.
+  setVisualPhysics({ bankSensitivity, bankInertia, pitchSensitivity, pitchInertia } = {}) {
+    if (Number.isFinite(bankSensitivity)) this.bankSensitivity = bankSensitivity;
+    if (Number.isFinite(pitchSensitivity)) this.pitchSensitivity = pitchSensitivity;
+    if (Number.isFinite(bankInertia)) this.bankLambda = 1 / Math.max(bankInertia, 0.02);
+    if (Number.isFinite(pitchInertia)) this.pitchLambda = 1 / Math.max(pitchInertia, 0.02);
+  }
+
+  // Live-tune the hand-flying motion model (dev panel). Inertia is a coast time
+  // constant in seconds; the in-motion drag rate is its reciprocal, so larger
+  // inertia = the aircraft holds its momentum longer. decelAnimation swaps the
+  // arcadey input-driven pitch for a simulator-like deceleration flare.
+  setManualPhysics({ topSpeed, accel, decel, inertia, decelAnimation, flareIntensity,
+    fwdStick, sideStick, hoverVert, hoverHoriz } = {}) {
+    if (Number.isFinite(topSpeed)) this.manualTopSpeed = topSpeed;
+    if (Number.isFinite(accel)) this.manualAccel = accel;
+    if (Number.isFinite(decel)) this.manualDecel = decel;
+    if (Number.isFinite(inertia)) this.manualMoveDrag = 1 / Math.max(inertia, 0.05);
+    if (Number.isFinite(flareIntensity)) this.decelFlare = flareIntensity;
+    if (Number.isFinite(fwdStick)) this.manualFwdStick = fwdStick;
+    if (Number.isFinite(sideStick)) this.manualSideStick = sideStick;
+    if (Number.isFinite(hoverVert)) this.hoverVert = hoverVert;
+    if (Number.isFinite(hoverHoriz)) this.hoverHoriz = hoverHoriz;
+    if (decelAnimation !== undefined) this.decelAnimation = Boolean(decelAnimation);
+  }
+
   // Toggle hand-flying. On enable, the manual integrator is seeded from the
   // current pose; on disable, the auto route is rejoined at the nearest point.
   setManualControl(on) {
@@ -383,6 +432,10 @@ export class Helicopter {
       this._posTarget.copy(this.group.position);
       this._mvel.set(0, 0, 0);
       this.vel = 0;
+      this._prevSpeed = 0;
+      this._fwdSpool = 0;
+      this._sideSpool = 0;
+      this._upSpool = 0;
       this.phase = 'MANUAL';
     } else {
       this._resumeAuto();
@@ -423,24 +476,76 @@ export class Helicopter {
     this.yaw += this.yawVel * dt;
     this._headingVec.set(Math.sin(this.yaw), 0, Math.cos(this.yaw));
 
-    // Cyclic → attitude (positive pitch = nose-down; bank into the roll input).
-    this.pitch = damp(this.pitch, (k.pitch || 0) * this.manualMaxTilt, 5, dt);
-    this.roll = damp(this.roll, -(k.roll || 0) * this.maxBank, 5, dt);
-
     // Cyclic → horizontal thrust along the body forward/right axes.
     const fwdX = this._headingVec.x;
     const fwdZ = this._headingVec.z;
     const rightX = fwdZ;
     const rightZ = -fwdX;
-    const a = this.manualAccel;
-    this._mvel.x += (fwdX * (k.pitch || 0) + rightX * (k.roll || 0)) * a * dt;
-    this._mvel.z += (fwdZ * (k.pitch || 0) + rightZ * (k.roll || 0)) * a * dt;
-    const hDrag = Math.exp(-1.5 * dt);
+    const inFwd = k.pitch || 0;
+    const inRight = k.roll || 0;
+    const hasInput = inFwd !== 0 || inRight !== 0;
+
+    // Initial-acceleration "stickiness": each axis ramps its thrust in from the
+    // moment its input is pressed, so the airframe visibly pitches/banks before
+    // speed builds (fakes a heavier, more advanced inertial model). A stick time
+    // of 0 spools instantly = the plain full-thrust behaviour.
+    this._fwdSpool = inFwd !== 0
+      ? (this.manualFwdStick > 0 ? Math.min(1, this._fwdSpool + dt / this.manualFwdStick) : 1)
+      : 0;
+    this._sideSpool = inRight !== 0
+      ? (this.manualSideStick > 0 ? Math.min(1, this._sideSpool + dt / this.manualSideStick) : 1)
+      : 0;
+    const fwdThrust = inFwd * this.manualAccel * this._fwdSpool;
+    const sideThrust = inRight * this.manualAccel * this._sideSpool;
+    this._mvel.x += (fwdX * fwdThrust + rightX * sideThrust) * dt;
+    this._mvel.z += (fwdZ * fwdThrust + rightZ * sideThrust) * dt;
+
+    // Idle release decelerates at the deceleration rate; while a cyclic input is
+    // held, the lighter in-motion drag (set by motion inertia) lets momentum
+    // carry. Horizontal speed is then capped at the top-speed setting.
+    const dragRate = hasInput ? this.manualMoveDrag : this.manualDecel;
+    const hDrag = Math.exp(-dragRate * dt);
     this._mvel.x *= hDrag;
     this._mvel.z *= hDrag;
+    let horizSpeed = Math.hypot(this._mvel.x, this._mvel.z);
+    if (horizSpeed > this.manualTopSpeed) {
+      const s = this.manualTopSpeed / horizSpeed;
+      this._mvel.x *= s;
+      this._mvel.z *= s;
+      horizSpeed = this.manualTopSpeed;
+    }
 
-    // Collective → vertical rate.
-    this._mvel.y = damp(this._mvel.y, (k.collective || 0) * this.manualMaxClimb, 3, dt);
+    // Attitude. Roll always banks into the cyclic input. Pitch is either the
+    // arcadey input-driven nose-down (toggle off), or a simulator-like flare
+    // (toggle on): while a fore/aft cyclic input is HELD the airframe stays
+    // tilted into it (nose-down forward, nose-up aft); once the input is
+    // RELEASED it pitches opposite to its travel to bleed off speed, easing
+    // back to level as the aircraft coasts to a stop. Using signed forward
+    // velocity (not speed magnitude) keeps the flare correct in reverse.
+    this.roll = damp(this.roll, -inRight * this.maxBank * this.bankSensitivity, this.bankLambda, dt);
+    const vFwd = this._mvel.x * fwdX + this._mvel.z * fwdZ;
+    let pitchTarget;
+    if (this.decelAnimation) {
+      pitchTarget = inFwd !== 0
+        ? inFwd * this.manualMaxTilt
+        : -this.decelFlare * THREE.MathUtils.clamp(vFwd / Math.max(this.manualTopSpeed, 1), -1, 1);
+      pitchTarget *= this.pitchSensitivity;
+    } else {
+      pitchTarget = inFwd * this.manualMaxTilt * this.pitchSensitivity;
+    }
+    this.pitch = damp(this.pitch, pitchTarget, this.pitchLambda, dt);
+
+    // Collective → vertical rate. Climbing shares the forward "stickiness" so the
+    // aircraft eases upward instead of leaping; descending stays immediate so a
+    // down input feels like dropping/falling (no ramp).
+    const collective = k.collective || 0;
+    this._upSpool = collective > 0
+      ? (this.manualFwdStick > 0 ? Math.min(1, this._upSpool + dt / this.manualFwdStick) : 1)
+      : 0;
+    const climbTarget = collective > 0
+      ? collective * this.manualMaxClimb * this._upSpool
+      : collective * this.manualMaxClimb;
+    this._mvel.y = damp(this._mvel.y, climbTarget, 3, dt);
 
     // Integrate position on the persistent target vector (no bob feedback).
     const p = this._posTarget;
@@ -631,11 +736,14 @@ export class Helicopter {
     // Hand-flown mode runs its own integrator and shares only the finalize step.
     if (this.manualControl) {
       this._updateManual(dt);
+      // Idle hover drift: a vertical bob plus a slow lateral sway (off the up/down
+      // axis), both fading out as the aircraft picks up speed.
       this.bobPhase += dt * 1.6;
-      const hoverBob = Math.sin(this.bobPhase * 1.3) * 0.06
-        * (1 - THREE.MathUtils.smoothstep(this.currentSpeed, 5, 34));
+      const hoverFade = 1 - THREE.MathUtils.smoothstep(this.currentSpeed, 5, 34);
       this.group.position.copy(this._posTarget);
-      this.group.position.y += hoverBob;
+      this.group.position.x += Math.sin(this.bobPhase * 0.9) * this.hoverHoriz * hoverFade;
+      this.group.position.y += Math.sin(this.bobPhase * 1.3) * this.hoverVert * hoverFade;
+      this.group.position.z += Math.cos(this.bobPhase * 1.1) * this.hoverHoriz * hoverFade;
       this._euler.set(this.pitch, this.yaw, this.roll, 'YXZ');
       this.group.quaternion.setFromEuler(this._euler);
       return;
@@ -656,9 +764,9 @@ export class Helicopter {
 
     // Bank from the ANTICIPATED turn (path lookahead) so the roll leads the
     // heading change. Snappier damping makes it read as the rotor doing work.
-    const bankRaw = THREE.MathUtils.clamp(-this._bankSignal * 1.5, -this.maxBank, this.maxBank);
+    const bankRaw = THREE.MathUtils.clamp(-this._bankSignal * 1.5 * this.bankSensitivity, -this.maxBank, this.maxBank);
     const rollTarget = bankRaw * (0.2 + 0.8 * leanCurve);
-    this.roll = damp(this.roll, rollTarget, 4.2, dt);
+    this.roll = damp(this.roll, rollTarget, this.bankLambda, dt);
 
     // Pitch: steady nose-down lean with airspeed, PLUS a pronounced transient
     // nose-down when accelerating and nose-up when decelerating (so it visibly
@@ -676,12 +784,12 @@ export class Helicopter {
     const forwardLean = this.maxLean * leanCurve;
     const climbUp = -THREE.MathUtils.clamp(Math.max(this._vy, 0) * 0.02, 0, 0.1);
     const flare = this.phase === 'LAND' ? -0.09 : 0;
-    const pitchTarget = forwardLean + accelPitch + climbUp + flare;
-    this.pitch = damp(this.pitch, pitchTarget, 2.6, dt);
+    const pitchTarget = (forwardLean + accelPitch + climbUp + flare) * this.pitchSensitivity;
+    this.pitch = damp(this.pitch, pitchTarget, this.pitchLambda, dt);
 
     // Subtle hover bob (fades out with speed) + faint rotor shimmer.
     this.bobPhase += dt * 1.6;
-    const bob = Math.sin(this.bobPhase * 1.3) * 0.06 * (1 - leanCurve);
+    const bob = Math.sin(this.bobPhase * 1.3) * this.hoverVert * (1 - leanCurve);
     const shimmer = Math.sin(t * 52) * 0.0016 * this.rotorRpm;
 
     this.group.position.copy(this._posTarget);
