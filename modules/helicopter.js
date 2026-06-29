@@ -268,10 +268,41 @@ function buildApache() {
   tailWheel.rotation.z = Math.PI / 2;
   group.add(tailWheel);
 
-  // Navigation strobe.
+  // --- Mast-mounted fire-control radar (AN/APG-78 "Longbow") ---
+  // The drum-shaped radome on a short pylon above the main rotor — the Apache's
+  // signature top fixture. It rides on the fixed mast, so it sits in the static
+  // airframe group and does NOT spin with the blades. (Replaces the old top
+  // navigation strobe that used to occupy this spot.)
+  const radarMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.82, metalness: 0.2 });
+  const radomeY = 2.82;
+  const radarPylon = cyl(0.1, 0.13, 0.55, 8, metalMat, 0, 2.52, -0.3);
+  group.add(radarPylon);
+  // Flared mast collar under the radome: a frustum wider at the top (where it
+  // meets the drum) than at its base, so the mount splays out toward the radome.
+  const radarCollar = cyl(0.36, 0.15, 0.34, 16, metalMat, 0, 2.47, -0.3);
+  group.add(radarCollar);
+  // Drum body + two flattened domed caps give the rounded-edge radome look.
+  // Kept squat (half the old height) so it reads as the real Longbow's flat
+  // drum — wider than it is tall.
+  const radomeBody = cyl(0.54, 0.54, 0.17, 22, radarMat, 0, radomeY, -0.3);
+  group.add(radomeBody);
+  const radomeTop = new THREE.Mesh(
+    new THREE.SphereGeometry(0.54, 22, 10, 0, Math.PI * 2, 0, Math.PI / 2), radarMat);
+  radomeTop.scale.set(1, 0.275, 1);
+  radomeTop.position.set(0, radomeY + 0.085, -0.3);
+  radomeTop.castShadow = true;
+  group.add(radomeTop);
+  const radomeBot = new THREE.Mesh(
+    new THREE.SphereGeometry(0.54, 22, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), radarMat);
+  radomeBot.scale.set(1, 0.275, 1);
+  radomeBot.position.set(0, radomeY - 0.085, -0.3);
+  group.add(radomeBot);
+
+  // Red anticollision beacon, relocated to the top of the tail boom now that the
+  // mast carries the radome (the real aircraft keeps a beacon back here too).
   const strobeMat = new THREE.MeshStandardMaterial({ color: 0x550000, emissive: 0xff0000, emissiveIntensity: 1.2 });
-  const strobe = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), strobeMat);
-  strobe.position.set(0, 2.5, -0.3);
+  const strobe = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), strobeMat);
+  strobe.position.set(0, 1.05, -5.6);
   group.add(strobe);
 
   return { group, mainRotor, tailRotor, mainBlur, tailBlur, bladeMat, tailBladeMat, strobeMat };
@@ -358,6 +389,11 @@ export class Helicopter {
     this._landFromX = 0;
     this._landFromZ = 0;
 
+    // Optional collision world (set per scene). When present, the airframe is
+    // pushed out of the level's static obstacles each frame.
+    this.collisionWorld = null;
+    this.bodyRadius = 3.5;
+
     // --- Manual flight (experimental) ---
     this.manualControl = false;
     this.manualInput = { collective: 0, pitch: 0, roll: 0, yaw: 0 };
@@ -388,6 +424,10 @@ export class Helicopter {
 
   setCruiseSpeed(v) {
     this.cruiseSpeed = THREE.MathUtils.clamp(Number(v) || 0, 0, 60);
+  }
+
+  setColliders(world) {
+    this.collisionWorld = world || null;
   }
 
   setAutoLoop(on) {
@@ -495,8 +535,18 @@ export class Helicopter {
     this._sideSpool = inRight !== 0
       ? (this.manualSideStick > 0 ? Math.min(1, this._sideSpool + dt / this.manualSideStick) : 1)
       : 0;
-    const fwdThrust = inFwd * this.manualAccel * this._fwdSpool;
-    const sideThrust = inRight * this.manualAccel * this._sideSpool;
+    let fwdThrust = inFwd * this.manualAccel * this._fwdSpool;
+    let sideThrust = inRight * this.manualAccel * this._sideSpool;
+    // Clamp the COMBINED cyclic thrust to a single axis' worth so banking while
+    // moving forward doesn't apply √2× the thrust (which, with drag settling
+    // below the speed cap, made a diagonal run end up faster than straight). A
+    // forward+bank input now tops out no faster than straight forward.
+    const thrustMag = Math.hypot(fwdThrust, sideThrust);
+    if (thrustMag > this.manualAccel) {
+      const s = this.manualAccel / thrustMag;
+      fwdThrust *= s;
+      sideThrust *= s;
+    }
     this._mvel.x += (fwdX * fwdThrust + rightX * sideThrust) * dt;
     this._mvel.z += (fwdZ * fwdThrust + rightZ * sideThrust) * dt;
 
@@ -557,6 +607,10 @@ export class Helicopter {
     const minY = this.heightFn(p.x, p.z) + 2.4;
     if (p.y < minY) { p.y = minY; if (this._mvel.y < 0) this._mvel.y = 0; }
     if (p.y > 320) { p.y = 320; if (this._mvel.y > 0) this._mvel.y = 0; }
+
+    // Push out of level obstacles (towers, hangars, the HQ...). Cancels the
+    // velocity driving into the wall so the airframe slides along it.
+    this.collisionWorld?.resolveStatics(p, this.bodyRadius, this._mvel);
 
     this.currentSpeed = Math.hypot(this._mvel.x, this._mvel.z);
     this.vel = this.currentSpeed;

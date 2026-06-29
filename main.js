@@ -225,6 +225,9 @@ let beacons = [];
 let helicopter = null;
 let cinematicStations = [];
 let destructiblePlanes = [];
+// A scene may return a live "world" (collision + per-frame enemy update) from
+// its base builder — currently the canyon-assault gameplay level.
+let sceneWorld = null;
 
 function disposeGroup(root) {
   root.traverse((child) => {
@@ -275,14 +278,17 @@ function buildWorld(detail) {
   currentScene.buildStatic(staticGroup);
   // A scene may supply its own base builder (e.g. the sea's carrier + island);
   // otherwise fall back to the generic land bases at the scene's placements.
-  beacons = (currentScene.buildBases
+  const baseBuild = currentScene.buildBases
     ? currentScene.buildBases(staticGroup)
-    : buildBases(staticGroup, currentScene.basePlacements())).beacons;
+    : buildBases(staticGroup, currentScene.basePlacements());
+  beacons = baseBuild.beacons;
+  sceneWorld = baseBuild.world ?? null;
 
   helicopter = new Helicopter(path, currentScene.height);
   helicopter.setCruiseSpeed(cruiseSpeed);
   helicopter.setAutoLoop(autoLoop);
   helicopter.setManualControl(manualControl);
+  helicopter.setColliders(sceneWorld?.collision ?? null);
   applyDevPhysics();
   worldRoot.add(helicopter.group);
 
@@ -307,6 +313,7 @@ function setScene(id) {
   staticGroup = null;
   helicopter = null;
   destructiblePlanes = [];
+  sceneWorld = null;
 
   path = currentScene.makePath();
   buildWorld(sceneDetail);
@@ -331,6 +338,10 @@ let rendererStats = window.localStorage.getItem(lsKey('stats')) === 'true';
 let showLabels = window.localStorage.getItem(lsKey('labels')) !== 'false';
 let manualControl = window.localStorage.getItem(lsKey('manual')) === 'true';
 let lookOnlyCamera = window.localStorage.getItem(lsKey('lookOnlyCamera')) !== 'false';
+// Chase-cam arrow-turn ease-in: 0 = the azimuth snaps to its turn rate at once;
+// higher = the first fraction of a second of a fresh left/right press is slowed,
+// so quick taps nudge the view a little for finer aim instead of jolting it.
+let chaseYawEaseAmount = THREE.MathUtils.clamp(num(window.localStorage.getItem(lsKey('chaseTurnEase')), 0.5), 0, 0.95);
 let weaponOverlay = window.localStorage.getItem(lsKey('weaponOverlay')) === 'true';
 let weaponAimLift = num(window.localStorage.getItem(lsKey('weaponAimLift')), 14);
 let showSpeedometer = window.localStorage.getItem(lsKey('speedometer')) === 'true';
@@ -338,7 +349,7 @@ let showSpeedometer = window.localStorage.getItem(lsKey('speedometer')) === 'tru
 // Dev physics: visual bank/pitch tuning. Defaults reproduce the current
 // hand-tuned look; inertia values are settle-time constants (seconds), so the
 // damping rate the helicopter uses is 1/inertia (~4.2 bank, ~2.6 pitch).
-const DEV_PHYSICS_DEFAULTS = { bankSensitivity: 1, bankInertia: 0.24, pitchSensitivity: 1, pitchInertia: 0.38 };
+const DEV_PHYSICS_DEFAULTS = { bankSensitivity: 0.85, bankInertia: 0.35, pitchSensitivity: 0.55, pitchInertia: 0.25 };
 let devBankSensitivity = num(window.localStorage.getItem(lsKey('devBankSens')), DEV_PHYSICS_DEFAULTS.bankSensitivity);
 let devBankInertia = num(window.localStorage.getItem(lsKey('devBankInertia')), DEV_PHYSICS_DEFAULTS.bankInertia);
 let devPitchSensitivity = num(window.localStorage.getItem(lsKey('devPitchSens')), DEV_PHYSICS_DEFAULTS.pitchSensitivity);
@@ -348,8 +359,8 @@ let devPitchInertia = num(window.localStorage.getItem(lsKey('devPitchInertia')),
 // the current feel — top speed ≈ terminal of the old thrust/drag model, motion
 // inertia is a coast time constant (s) whose reciprocal is the in-motion drag.
 const DEV_HANDLING_DEFAULTS = {
-  topSpeed: 18, accel: 26, decel: 1.5, inertia: 0.67, flareIntensity: 0.34,
-  fwdStick: 0, sideStick: 0, hoverVert: 0.06, hoverHoriz: 0, decelAnimation: false,
+  topSpeed: 48, accel: 30, decel: 1.0, inertia: 1.0, flareIntensity: 0.5,
+  fwdStick: 0.4, sideStick: 0.3, hoverVert: 0.07, hoverHoriz: 0.1, decelAnimation: false,
 };
 let devTopSpeed = num(window.localStorage.getItem(lsKey('devTopSpeed')), DEV_HANDLING_DEFAULTS.topSpeed);
 let devAccel = num(window.localStorage.getItem(lsKey('devAccel')), DEV_HANDLING_DEFAULTS.accel);
@@ -459,6 +470,19 @@ lookOnlyInput.addEventListener('change', () => {
   lookOnlyCamera = lookOnlyInput.checked;
   window.localStorage.setItem(lsKey('lookOnlyCamera'), String(lookOnlyCamera));
   requestRecenter();
+});
+
+const chaseTurnEaseInput = $('chase-turn-ease');
+const chaseTurnEaseValue = $('chase-turn-ease-value');
+function syncChaseTurnEase() {
+  chaseTurnEaseInput.value = String(chaseYawEaseAmount);
+  chaseTurnEaseValue.textContent = chaseYawEaseAmount.toFixed(2);
+}
+syncChaseTurnEase();
+chaseTurnEaseInput.addEventListener('input', () => {
+  chaseYawEaseAmount = THREE.MathUtils.clamp(num(chaseTurnEaseInput.value, 0.5), 0, 0.95);
+  chaseTurnEaseValue.textContent = chaseYawEaseAmount.toFixed(2);
+  window.localStorage.setItem(lsKey('chaseTurnEase'), String(chaseYawEaseAmount));
 });
 
 const sceneSelect = $('scene-select');
@@ -760,7 +784,7 @@ devDecelAnimInput.addEventListener('change', () => {
   applyDevPhysics();
 });
 
-$('dev-physics-reset').addEventListener('click', () => {
+function resetDevPhysicsDefaults() {
   devBankSensitivity = DEV_PHYSICS_DEFAULTS.bankSensitivity;
   devBankInertia = DEV_PHYSICS_DEFAULTS.bankInertia;
   devPitchSensitivity = DEV_PHYSICS_DEFAULTS.pitchSensitivity;
@@ -785,8 +809,100 @@ $('dev-physics-reset').addEventListener('click', () => {
   ]) window.localStorage.setItem(lsKey(k), String(v));
   syncDevPhysicsInputs();
   applyDevPhysics();
-});
+}
+
+// Self-heal a "never configured" handling state: if BOTH top speed and
+// acceleration loaded at their slider minimum (4), the aircraft is effectively
+// dead in the water and the player would have to hit Reset manually. Treat that
+// as un-set and restore the defaults.
+if (devTopSpeed === 4 && devAccel === 4) resetDevPhysicsDefaults();
 syncDevPhysicsInputs();
+
+// ---- Presets: snapshot EVERY menu control into one of 3 slots. One slot can be
+// marked the "default": that preset is what "Reset to defaults" restores and
+// what loads automatically on app startup. ----
+function collectMenuSnapshot() {
+  const snap = {};
+  for (const el of menuPanel.querySelectorAll('input, select')) {
+    if (el.id && el.id.startsWith('preset')) continue; // skip the preset controls themselves
+    if (el.type === 'radio') { if (el.checked) snap[el.name] = el.value; continue; }
+    if (!el.id) continue;
+    snap[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+  }
+  return snap;
+}
+
+function dispatchApply(el) {
+  const type = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'radio') ? 'change' : 'input';
+  el.dispatchEvent(new Event(type, { bubbles: true }));
+}
+
+// Restore a snapshot by driving each control to its saved value and firing its
+// normal event, so every existing listener (scene rebuild, time of day, dev
+// physics, weapons...) applies it exactly as if the user had set it by hand.
+function applyMenuSnapshot(snap) {
+  if (!snap || typeof snap !== 'object') return;
+  for (const el of menuPanel.querySelectorAll('input, select')) {
+    if (el.id && el.id.startsWith('preset')) continue;
+    if (el.type === 'radio') {
+      if (el.name in snap && el.value === snap[el.name] && !el.checked) { el.checked = true; dispatchApply(el); }
+      continue;
+    }
+    if (!el.id || !(el.id in snap)) continue;
+    if (el.type === 'checkbox') {
+      const v = Boolean(snap[el.id]);
+      if (el.checked !== v) { el.checked = v; dispatchApply(el); }
+    } else {
+      const v = String(snap[el.id]);
+      if (el.value !== v) { el.value = v; dispatchApply(el); }
+    }
+  }
+}
+
+const presetSlotSelect = $('preset-slot');
+const presetDefaultSelect = $('preset-default');
+const presetStatus = $('preset-status');
+presetDefaultSelect.value = window.localStorage.getItem(lsKey('preset.default')) || '';
+presetDefaultSelect.addEventListener('change', () => {
+  window.localStorage.setItem(lsKey('preset.default'), presetDefaultSelect.value);
+  presetStatus.textContent = presetDefaultSelect.value
+    ? `Preset ${presetDefaultSelect.value} is now the default (loads on startup).`
+    : 'No default preset — startup keeps your last-used settings.';
+});
+
+$('preset-save').addEventListener('click', () => {
+  const slot = presetSlotSelect.value;
+  window.localStorage.setItem(lsKey(`preset.${slot}`), JSON.stringify(collectMenuSnapshot()));
+  presetStatus.textContent = `Saved all menu settings to preset ${slot}.`;
+});
+$('preset-load').addEventListener('click', () => {
+  const slot = presetSlotSelect.value;
+  const raw = window.localStorage.getItem(lsKey(`preset.${slot}`));
+  if (!raw) { presetStatus.textContent = `Preset ${slot} is empty.`; return; }
+  try { applyMenuSnapshot(JSON.parse(raw)); presetStatus.textContent = `Loaded preset ${slot}.`; }
+  catch { presetStatus.textContent = `Preset ${slot} is corrupted.`; }
+});
+
+// Restore the slot marked default. Returns the slot loaded, or '' if none/empty.
+function loadDefaultPreset() {
+  const slot = window.localStorage.getItem(lsKey('preset.default')) || '';
+  if (!slot) return '';
+  const raw = window.localStorage.getItem(lsKey(`preset.${slot}`));
+  if (!raw) return '';
+  try { applyMenuSnapshot(JSON.parse(raw)); return slot; } catch { return ''; }
+}
+
+// "Reset to defaults" now means: restore the preset marked default. With no
+// default preset set, fall back to the built-in handling/physics defaults.
+$('dev-physics-reset').addEventListener('click', () => {
+  const slot = loadDefaultPreset();
+  if (slot) {
+    presetStatus.textContent = `Reset to default preset ${slot}.`;
+  } else {
+    resetDevPhysicsDefaults();
+    presetStatus.textContent = 'Reset handling/physics to built-in defaults (no default preset set).';
+  }
+});
 
 // HUD elements.
 const hudSpeed = $('hud-speed');
@@ -882,6 +998,10 @@ const chaseDefaultPhi = 1.18; // ~22 deg above the horizon
 const chaseTurnLookahead = 0.16; // subtle yaw preview while hand-flying
 const chaseTurnExtraLeadMax = 0.18;
 const chaseTurnExtraLeadRate = 0.55;
+const chaseTurnBaseLambda = 5;    // azimuth follow rate while arrow-yawing
+const chaseTurnEaseDuration = 0.55; // s of slowed response at the start of a press
+const chaseIdleLambda = 2.8;      // azimuth recenter rate when flying with no yaw input
+const chaseMaxYawRate = 1.0;      // rad/s hard ceiling on camera azimuth speed (both ways)
 const followTarget = new THREE.Vector3();
 const effectiveFollowTarget = new THREE.Vector3();
 const targetWithPan = new THREE.Vector3();
@@ -901,6 +1021,7 @@ const offsetVec = new THREE.Vector3();
 let interacting = false; // a mouse button / wheel drag is active
 let recenter = true;
 let chaseTurnExtraLead = 0;
+let chaseYawHoldTime = 0;
 let lastChaseYawInput = 0;
 let lookOnlyAnchorActive = false;
 let chaseYawReleaseHold = false;
@@ -992,8 +1113,10 @@ function updateChase(dt) {
   const previousYawInput = lastChaseYawInput;
   if (yawInput && yawInput === previousYawInput) {
     chaseTurnExtraLead = Math.min(chaseTurnExtraLeadMax, chaseTurnExtraLead + chaseTurnExtraLeadRate * dt);
+    chaseYawHoldTime += dt;
   } else {
     chaseTurnExtraLead = 0;
+    chaseYawHoldTime = 0;
   }
   if (yawInput) chaseYawReleaseHold = false;
 
@@ -1020,10 +1143,19 @@ function updateChase(dt) {
       && Math.abs(sph.phi - chaseDefaultPhi) < 0.02
       && Math.abs(shortestAngleTo(sph.theta, behindTheta)) < 0.02) recenter = false;
   } else if (!interacting) {
+    const preTurnTheta = sph.theta;
     // Lead the nose slightly on arrow-yaw. Holding the turn adds a little more
     // lead slowly, so the view anticipates sustained turns without snapping.
     if (yawInput) {
-      sph.theta = dampAngle(sph.theta, behindTheta, 5, dt);
+      // Ease the azimuth response IN over a fresh press: the rate starts SLOW
+      // (so quick taps read as fine nudges) and rises to the normal turn rate —
+      // it NEVER goes above it, so the effect only ever slows the camera. Using
+      // smootherstep means the catch-up rate-of-change itself rises to a max and
+      // then decays symmetrically, so the transition has no abrupt join at
+      // either end. The rate-scale runs (1 - amount) -> 1; amount = 0 = off.
+      const phase = THREE.MathUtils.clamp(chaseYawHoldTime / chaseTurnEaseDuration, 0, 1);
+      const easeScale = THREE.MathUtils.lerp(1 - chaseYawEaseAmount, 1, THREE.MathUtils.smootherstep(phase, 0, 1));
+      sph.theta = dampAngle(sph.theta, behindTheta, chaseTurnBaseLambda * easeScale, dt);
     } else if (chaseYawReleaseHold) {
       chaseYawReleaseTime += dt;
       const catchDistance = Math.abs(shortestAngleTo(chaseYawReleaseTheta, caughtUpTheta));
@@ -1036,8 +1168,21 @@ function updateChase(dt) {
       // In look-only idle, let the viewer keep whatever direction they panned
       // or orbited to instead of quietly pulling the chase cam back behind.
     } else {
-      sph.theta = dampAngle(sph.theta, behindTheta, 2.2, dt);
+      // Recenter directly behind. A first-order follow always trails a craft
+      // that's still yawing (e.g. tracking the meandering path) by a steady
+      // angle of yawVel/lambda — which is the "almost centred but slightly off"
+      // residual. Feed that term forward so it settles truly behind, not short.
+      const idleLead = helicopter.yawVel / chaseIdleLambda;
+      sph.theta = dampAngle(sph.theta, behindTheta + idleLead, chaseIdleLambda, dt);
     }
+    // Hard ceiling on how fast the view can rotate, applied symmetrically to
+    // every follow path above. Damping toward a jumping target (rapid left/right
+    // mashing flips the lead instantly while the heli's yaw still has inertia)
+    // would otherwise fling the azimuth past its steady one-direction rate. This
+    // only ever clamps DOWN, so the camera never turns faster than a 1x turn.
+    const maxStep = chaseMaxYawRate * dt;
+    const stepTaken = shortestAngleTo(preTurnTheta, sph.theta);
+    if (Math.abs(stepTaken) > maxStep) sph.theta = preTurnTheta + Math.sign(stepTaken) * maxStep;
   }
   lastChaseYawInput = yawInput;
   sph.makeSafe();
@@ -1557,6 +1702,9 @@ function animate(now = 0) {
   if (manualControl) helicopter.manualInput = manualInputFromKeys();
   helicopter.update(dt, t);
 
+  // Drive the active gameplay level (enemy column, tracking turrets, tracers).
+  sceneWorld?.update(dt, t, helicopter.group.position);
+
   // Sun + shadow follow the helicopter.
   const heliPos = helicopter.group.position;
   sun.target.position.copy(heliPos);
@@ -1589,4 +1737,7 @@ syncWeaponOverlay();
 syncSpeedometer();
 controls.enabled = true;
 requestRecenter();
+// If the user has marked a preset as default, load it now so the app starts in
+// that exact menu state (overriding the last-used per-control values).
+loadDefaultPreset();
 animate();

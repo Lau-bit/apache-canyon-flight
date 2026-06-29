@@ -260,6 +260,53 @@ function addHelipad(group, beacons, { y = 0, r = 11, color = 0xff3322 } = {}) {
   }
 }
 
+// --- Shared strike fighter ---------------------------------------------------
+// A twin-tail strike fighter, ~11m long, nose toward +X. Exported so any scene
+// can spot the same aircraft (the carrier deck park AND the canyon airfield).
+export function makeStrikeJet({ folded = false } = {}) {
+  const jetMat = new THREE.MeshStandardMaterial({ color: 0x5b656f, roughness: 0.55, metalness: 0.35 });
+  const jetDk = new THREE.MeshStandardMaterial({ color: 0x434b53, roughness: 0.6, metalness: 0.3 });
+  const canopyMat = new THREE.MeshStandardMaterial({ color: 0x1a2226, roughness: 0.2, metalness: 0.5 });
+  const missileMat = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.7 });
+
+  const j = new THREE.Group();
+  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 1.05, 9, 10), jetMat);
+  fuse.rotation.z = Math.PI / 2;
+  fuse.position.y = 1.1;
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.85, 3.2, 10), jetMat);
+  nose.rotation.z = -Math.PI / 2;
+  nose.position.set(6, 1.1, 0);
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 8), canopyMat);
+  canopy.scale.set(1.8, 0.7, 0.9);
+  canopy.position.set(2.8, 1.7, 0);
+  // Swept wings (foldable). Each side built around the wing-root hinge.
+  const wingGeo = new THREE.BoxGeometry(4.6, 0.18, 3.2);
+  const wingL = new THREE.Mesh(wingGeo, jetDk);
+  const wingR = new THREE.Mesh(wingGeo, jetDk);
+  if (folded) {
+    wingL.position.set(-0.5, 2.2, 1.4); wingL.rotation.x = -1.2;
+    wingR.position.set(-0.5, 2.2, -1.4); wingR.rotation.x = 1.2;
+  } else {
+    wingL.position.set(-0.6, 1.1, 3.0); wingL.rotation.y = 0.5;
+    wingR.position.set(-0.6, 1.1, -3.0); wingR.rotation.y = -0.5;
+  }
+  // Twin canted tail fins + horizontal stabs.
+  const finGeo = new THREE.BoxGeometry(2.4, 2.2, 0.16);
+  const finL = new THREE.Mesh(finGeo, jetDk);
+  finL.position.set(-4, 2.3, 0.9); finL.rotation.z = 0.3; finL.rotation.x = 0.2;
+  const finR = new THREE.Mesh(finGeo, jetDk);
+  finR.position.set(-4, 2.3, -0.9); finR.rotation.z = 0.3; finR.rotation.x = -0.2;
+  const stab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.14, 4.2), jetDk);
+  stab.position.set(-4.2, 1.1, 0);
+  // Wingtip missiles.
+  const m1 = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.2, 6), missileMat);
+  m1.rotation.z = Math.PI / 2; m1.position.set(0, 1.0, folded ? 1.4 : 4.4);
+  const m2 = m1.clone(); m2.position.z = folded ? -1.4 : -4.4;
+  j.add(fuse, nose, canopy, wingL, wingR, finL, finR, stab, m1, m2);
+  j.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  return j;
+}
+
 // --- Aircraft carrier (BASE ALPHA) ------------------------------------------
 
 function buildCarrier(name, beacons) {
@@ -478,50 +525,12 @@ function buildCarrier(name, beacons) {
   }
 
   // --- Aircraft ---------------------------------------------------------------
+  // The strike fighter model lives at module scope (makeStrikeJet) so other
+  // scenes — e.g. the canyon assault level's airfield — can reuse the same plane.
+  const makeJet = makeStrikeJet;
+  // Steel tones shared by the stern plane-guard helicopter below.
   const jetMat = new THREE.MeshStandardMaterial({ color: 0x5b656f, roughness: 0.55, metalness: 0.35 });
   const jetDk = new THREE.MeshStandardMaterial({ color: 0x434b53, roughness: 0.6, metalness: 0.3 });
-  const canopyMat = new THREE.MeshStandardMaterial({ color: 0x1a2226, roughness: 0.2, metalness: 0.5 });
-  const missileMat = new THREE.MeshStandardMaterial({ color: 0xcfcabb, roughness: 0.7 });
-
-  // A twin-tail strike fighter, ~11m long, nose toward +X.
-  function makeJet({ folded = false } = {}) {
-    const j = new THREE.Group();
-    const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 1.05, 9, 10), jetMat);
-    fuse.rotation.z = Math.PI / 2;
-    fuse.position.y = 1.1;
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.85, 3.2, 10), jetMat);
-    nose.rotation.z = -Math.PI / 2;
-    nose.position.set(6, 1.1, 0);
-    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.7, 12, 8), canopyMat);
-    canopy.scale.set(1.8, 0.7, 0.9);
-    canopy.position.set(2.8, 1.7, 0);
-    // Swept wings (foldable). Each side built around the wing-root hinge.
-    const wingGeo = new THREE.BoxGeometry(4.6, 0.18, 3.2);
-    const wingL = new THREE.Mesh(wingGeo, jetDk);
-    const wingR = new THREE.Mesh(wingGeo, jetDk);
-    if (folded) {
-      wingL.position.set(-0.5, 2.2, 1.4); wingL.rotation.x = -1.2;
-      wingR.position.set(-0.5, 2.2, -1.4); wingR.rotation.x = 1.2;
-    } else {
-      wingL.position.set(-0.6, 1.1, 3.0); wingL.rotation.y = 0.5;
-      wingR.position.set(-0.6, 1.1, -3.0); wingR.rotation.y = -0.5;
-    }
-    // Twin canted tail fins + horizontal stabs.
-    const finGeo = new THREE.BoxGeometry(2.4, 2.2, 0.16);
-    const finL = new THREE.Mesh(finGeo, jetDk);
-    finL.position.set(-4, 2.3, 0.9); finL.rotation.z = 0.3; finL.rotation.x = 0.2;
-    const finR = new THREE.Mesh(finGeo, jetDk);
-    finR.position.set(-4, 2.3, -0.9); finR.rotation.z = 0.3; finR.rotation.x = -0.2;
-    const stab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.14, 4.2), jetDk);
-    stab.position.set(-4.2, 1.1, 0);
-    // Wingtip missiles.
-    const m1 = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 2.2, 6), missileMat);
-    m1.rotation.z = Math.PI / 2; m1.position.set(0, 1.0, folded ? 1.4 : 4.4);
-    const m2 = m1.clone(); m2.position.z = folded ? -1.4 : -4.4;
-    j.add(fuse, nose, canopy, wingL, wingR, finL, finR, stab, m1, m2);
-    j.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-    return j;
-  }
 
   // A packed deck park aft + a couple spotted on the elevators.
   const jetSpots = [

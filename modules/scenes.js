@@ -2,6 +2,7 @@ import { buildCanyon, canyonCenterZ, canyonHalfWidth, terrainHeight, WORLD } fro
 import { buildSurroundings } from './surroundings.js';
 import { buildPlains, plainsCenterZ, plainsHalfWidth, plainsHeight, PLAINS } from './plains.js';
 import { buildSeaTerrain, buildSeaBases, seaCenterZ, seaHalfWidth, seaHeight, SEA } from './sea.js';
+import { buildAssault } from './assault.js';
 import { FlightPath } from './flightpath.js';
 
 // A scene bundles everything that differs between worlds: how the ground is
@@ -40,6 +41,45 @@ export const SCENES = [
     },
     cameraStartX: WORLD.baseAx,
     // Canyon keeps the raw time-of-day preset.
+  },
+  {
+    id: 'assault',
+    label: 'Canyon assault',
+    buildTerrain(group, detail) {
+      return buildCanyon(group, { detail });
+    },
+    buildStatic() {
+      // Installations, endpoint pads, and the tank column are all placed by the
+      // custom buildBases hook below (which also returns the live-update world).
+    },
+    buildBases(group) {
+      return buildAssault(group);
+    },
+    basePlacements() {
+      // Used only by makePath(): the FOB -> objective run along the corridor.
+      return [
+        { name: 'FOB ALPHA', x: WORLD.baseAx, z: canyonCenterZ(WORLD.baseAx), rotationY: 0 },
+        { name: 'OBJ BRAVO', x: WORLD.baseBx, z: canyonCenterZ(WORLD.baseBx), rotationY: Math.PI },
+      ];
+    },
+    height: terrainHeight,
+    makePath() {
+      return new FlightPath({
+        baseAx: WORLD.baseAx,
+        baseBx: WORLD.baseBx,
+        centerZ: canyonCenterZ,
+        halfWidth: canyonHalfWidth,
+        height: terrainHeight,
+      });
+    },
+    cameraStartX: WORLD.baseAx,
+    // A hot, dusty gun-run light: warmer haze pulled in a little closer.
+    tuneLighting(L) {
+      L.fog.color = 0xc9b6a0;
+      L.fog.near = Math.max(60, L.fog.near - 10);
+      L.hemi.ground = 0x6a4a30;
+      L.ambient += 0.04;
+    },
   },
   {
     id: 'plains',

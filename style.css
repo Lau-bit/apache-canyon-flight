@@ -240,6 +240,18 @@ canvas { display: block; }
 #menu-panel .dev-reset:hover { background: rgba(28, 44, 33, 0.82); }
 #menu-panel .dev-reset:active { background: rgba(36, 56, 42, 0.9); }
 
+/* Save/Load buttons sit side by side. */
+#menu-panel .preset-buttons {
+  display: flex;
+  gap: 8px;
+}
+#menu-panel .preset-buttons .dev-reset { width: auto; flex: 1; }
+#menu-panel #preset-status {
+  display: block;
+  margin-top: 8px;
+  min-height: 12px;
+}
+
 .menu-help {
   margin-top: 10px;
   padding-top: 9px;
