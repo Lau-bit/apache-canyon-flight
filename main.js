@@ -8,6 +8,8 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { buildBases } from './modules/bases.js';
 import { Helicopter } from './modules/helicopter.js';
 import { SCENES, getScene } from './modules/scenes.js';
+import { CollisionWorld } from './modules/collision.js';
+import { PAD_REST_Y } from './modules/flightpath.js';
 
 // ---------------------------------------------------------------- renderer ---
 const scene = new THREE.Scene();
@@ -284,11 +286,20 @@ function buildWorld(detail) {
   beacons = baseBuild.beacons;
   sceneWorld = baseBuild.world ?? null;
 
+  // Player collision: reuse the scene's own collision world if it has one (the
+  // assault level's structures), otherwise spin up a fresh one. Either way,
+  // register this scene's landing pads so the helicopter rests on them.
+  const playerCollision = sceneWorld?.collision ?? new CollisionWorld(currentScene.height);
+  for (const pad of currentScene.landingPads?.() ?? []) {
+    playerCollision.addPad(pad.x, pad.z, pad.r, pad.restY ?? PAD_REST_Y);
+  }
+
   helicopter = new Helicopter(path, currentScene.height);
   helicopter.setCruiseSpeed(cruiseSpeed);
   helicopter.setAutoLoop(autoLoop);
   helicopter.setManualControl(manualControl);
-  helicopter.setColliders(sceneWorld?.collision ?? null);
+  helicopter.setColliders(playerCollision);
+  helicopter.setSelfRendered(cameraMode !== 'cockpit');
   applyDevPhysics();
   worldRoot.add(helicopter.group);
 
@@ -342,6 +353,9 @@ let lookOnlyCamera = window.localStorage.getItem(lsKey('lookOnlyCamera')) !== 'f
 // higher = the first fraction of a second of a fresh left/right press is slowed,
 // so quick taps nudge the view a little for finer aim instead of jolting it.
 let chaseYawEaseAmount = THREE.MathUtils.clamp(num(window.localStorage.getItem(lsKey('chaseTurnEase')), 0.5), 0, 0.95);
+// First-person view: fixed vertical look angle (degrees, + = up). The view no
+// longer tips with the airframe's pitch, so this sets where it looks.
+let fpvCameraAngle = THREE.MathUtils.clamp(num(window.localStorage.getItem(lsKey('fpvAngle')), 0), -45, 45);
 let weaponOverlay = window.localStorage.getItem(lsKey('weaponOverlay')) === 'true';
 let weaponAimLift = num(window.localStorage.getItem(lsKey('weaponAimLift')), 14);
 let showSpeedometer = window.localStorage.getItem(lsKey('speedometer')) === 'true';
@@ -450,6 +464,9 @@ const cameraInputs = [...document.querySelectorAll('input[name="camera-mode"]')]
 function syncCameraInputs() {
   for (const i of cameraInputs) i.checked = i.value === cameraMode;
   document.body.classList.toggle('cockpit-view', cameraMode === 'cockpit');
+  // First-person: disable panning so a middle/right drag can't translate the
+  // view off the aircraft. Rotate-to-glance still works and re-anchors on release.
+  controls.enablePan = cameraMode !== 'cockpit';
 }
 function setCameraMode(mode) {
   if (!['chase', 'cockpit', 'orbit', 'cinematic'].includes(mode)) return;
@@ -460,6 +477,8 @@ function setCameraMode(mode) {
   recenter = mode === 'chase' || mode === 'cockpit';
   if (mode === 'orbit' && helicopter) orbitAnchor.copy(helicopter.group.position);
   window.localStorage.setItem(lsKey('camera'), mode);
+  // First-person (cockpit) hides the airframe from view but keeps its shadow.
+  helicopter?.setSelfRendered(mode !== 'cockpit');
   syncCameraInputs();
 }
 cameraInputs.forEach((i) => i.addEventListener('change', () => setCameraMode(i.value)));
@@ -483,6 +502,19 @@ chaseTurnEaseInput.addEventListener('input', () => {
   chaseYawEaseAmount = THREE.MathUtils.clamp(num(chaseTurnEaseInput.value, 0.5), 0, 0.95);
   chaseTurnEaseValue.textContent = chaseYawEaseAmount.toFixed(2);
   window.localStorage.setItem(lsKey('chaseTurnEase'), String(chaseYawEaseAmount));
+});
+
+const fpvCameraAngleInput = $('fpv-camera-angle');
+const fpvCameraAngleValue = $('fpv-camera-angle-value');
+function syncFpvCameraAngle() {
+  fpvCameraAngleInput.value = String(fpvCameraAngle);
+  fpvCameraAngleValue.textContent = String(fpvCameraAngle);
+}
+syncFpvCameraAngle();
+fpvCameraAngleInput.addEventListener('input', () => {
+  fpvCameraAngle = THREE.MathUtils.clamp(num(fpvCameraAngleInput.value, 0), -45, 45);
+  fpvCameraAngleValue.textContent = String(fpvCameraAngle);
+  window.localStorage.setItem(lsKey('fpvAngle'), String(fpvCameraAngle));
 });
 
 const sceneSelect = $('scene-select');
@@ -862,9 +894,60 @@ function applyMenuSnapshot(snap) {
 const presetSlotSelect = $('preset-slot');
 const presetDefaultSelect = $('preset-default');
 const presetStatus = $('preset-status');
+
+// Presets are mirrored to a file on disk (via the dev server) so they survive
+// localStorage being wiped, a different browser instance, or a dev restart.
+// localStorage stays the fast working copy; disk is the durable source.
+const PRESET_SLOTS = ['1', '2', '3'];
+function presetsBundle() {
+  const bundle = { default: window.localStorage.getItem(lsKey('preset.default')) || '' };
+  for (const slot of PRESET_SLOTS) {
+    const raw = window.localStorage.getItem(lsKey(`preset.${slot}`));
+    try { bundle[slot] = raw ? JSON.parse(raw) : null; } catch { bundle[slot] = null; }
+  }
+  return bundle;
+}
+function persistPresetsToServer() {
+  try {
+    fetch('/api/presets', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(presetsBundle()),
+    }).catch(() => {});
+  } catch { /* server not available (e.g. opened another way) — localStorage still holds them */ }
+}
+async function hydratePresetsFromServer() {
+  let data;
+  try {
+    const res = await fetch('/api/presets');
+    if (!res.ok) return;
+    data = await res.json();
+  } catch { return; } // server not reachable — keep using localStorage as-is
+  if (!data || typeof data !== 'object') return;
+
+  const diskHasData = PRESET_SLOTS.some((s) => data[s]) || Boolean(data.default);
+  if (diskHasData) {
+    // Disk is the durable source of truth: hydrate localStorage from it.
+    for (const slot of PRESET_SLOTS) {
+      if (data[slot]) window.localStorage.setItem(lsKey(`preset.${slot}`), JSON.stringify(data[slot]));
+    }
+    if (typeof data.default === 'string') {
+      window.localStorage.setItem(lsKey('preset.default'), data.default);
+      presetDefaultSelect.value = data.default;
+    }
+  } else {
+    // Nothing on disk yet — seed it from any presets the browser still holds so
+    // they become durable from here on (one-time migration).
+    const hasLocal = PRESET_SLOTS.some((s) => window.localStorage.getItem(lsKey(`preset.${s}`)))
+      || window.localStorage.getItem(lsKey('preset.default'));
+    if (hasLocal) persistPresetsToServer();
+  }
+}
+
 presetDefaultSelect.value = window.localStorage.getItem(lsKey('preset.default')) || '';
 presetDefaultSelect.addEventListener('change', () => {
   window.localStorage.setItem(lsKey('preset.default'), presetDefaultSelect.value);
+  persistPresetsToServer();
   presetStatus.textContent = presetDefaultSelect.value
     ? `Preset ${presetDefaultSelect.value} is now the default (loads on startup).`
     : 'No default preset — startup keeps your last-used settings.';
@@ -873,6 +956,7 @@ presetDefaultSelect.addEventListener('change', () => {
 $('preset-save').addEventListener('click', () => {
   const slot = presetSlotSelect.value;
   window.localStorage.setItem(lsKey(`preset.${slot}`), JSON.stringify(collectMenuSnapshot()));
+  persistPresetsToServer();
   presetStatus.textContent = `Saved all menu settings to preset ${slot}.`;
 });
 $('preset-load').addEventListener('click', () => {
@@ -1002,6 +1086,8 @@ const chaseTurnBaseLambda = 5;    // azimuth follow rate while arrow-yawing
 const chaseTurnEaseDuration = 0.55; // s of slowed response at the start of a press
 const chaseIdleLambda = 2.8;      // azimuth recenter rate when flying with no yaw input
 const chaseMaxYawRate = 1.0;      // rad/s hard ceiling on camera azimuth speed (both ways)
+const cockpitYawLambda = 6;       // how quickly the first-person view eases onto the nose
+const cockpitVertLambda = 5;      // vertical stabilization rate of the first-person viewpoint
 const followTarget = new THREE.Vector3();
 const effectiveFollowTarget = new THREE.Vector3();
 const targetWithPan = new THREE.Vector3();
@@ -1017,12 +1103,16 @@ const lookOnlyAnchor = new THREE.Vector3();
 const lookOnlyHeading = new THREE.Vector3();
 const sph = new THREE.Spherical();
 const offsetVec = new THREE.Vector3();
+const cockpitLookDir = new THREE.Vector3();
+const prevCockpitEye = new THREE.Vector3();
 
 let interacting = false; // a mouse button / wheel drag is active
 let recenter = true;
 let chaseTurnExtraLead = 0;
 let chaseYawHoldTime = 0;
 let lastChaseYawInput = 0;
+let cockpitYaw = 0;          // smoothed first-person view heading
+let cockpitYawInit = false;
 let lookOnlyAnchorActive = false;
 let chaseYawReleaseHold = false;
 let chaseYawReleaseTheta = 0;
@@ -1079,14 +1169,30 @@ function resolveFollowTarget(mode) {
   effectiveCamHeading.copy(holdFollow ? lookOnlyHeading : camHeading);
 }
 
-function computeFraming(mode) {
+function computeFraming(mode, dt) {
   const lead = helicopter.getLeadFrame();
   camHeading.copy(lead.headingVec);
   if (mode === 'cockpit') {
-    const pose = helicopter.getCockpitPose('forward');
-    tmpFwd.copy(pose.lookAt).sub(pose.eye).normalize();
-    followTarget.copy(pose.eye).addScaledVector(tmpFwd, 9);
-    desiredCamPos.copy(pose.eye);
+    // Ease the view's YAW onto the nose instead of rigidly snapping with it: a
+    // hard left/right input ramps in and settles smoothly (like the chase cam),
+    // with no yaw-lead jolt on press or snap-back on release.
+    if (!cockpitYawInit || recenter) { cockpitYaw = helicopter.yaw; cockpitYawInit = true; }
+    else cockpitYaw = dampAngle(cockpitYaw, helicopter.yaw, cockpitYawLambda, dt);
+    // Stabilized eye: the cockpit seat offset rotated by YAW ONLY (no pitch/roll),
+    // so the viewpoint never lurches vertically when the nose pitches — that swing
+    // (up to ~1m on accel/decel) was the forward/back "jump". Vertical smoothing of
+    // this target happens in updateCockpit.
+    const ex = Math.sin(cockpitYaw);
+    const ez = Math.cos(cockpitYaw);
+    const hp = helicopter.group.position;
+    desiredCamPos.set(hp.x + ex * 4.5, hp.y + 0.25, hp.z + ez * 4.5);
+    // Look from the smoothed heading + a FIXED vertical angle (the FPV camera-angle
+    // slider), ignoring airframe pitch. Stored as a direction so the target can be
+    // aimed from the camera's actual (smoothed) position in updateCockpit.
+    const ca = THREE.MathUtils.degToRad(fpvCameraAngle);
+    const cosA = Math.cos(ca);
+    cockpitLookDir.set(ex * cosA, Math.sin(ca), ez * cosA);
+    followTarget.copy(desiredCamPos).addScaledVector(cockpitLookDir, 9);
   } else if (mode === 'cinematic') {
     followTarget.copy(lead.point);
     const idx = Math.min(cinematicStations.length - 1, Math.floor(helicopter.progress01 * cinematicStations.length));
@@ -1238,12 +1344,29 @@ function updateOrbit(dt) {
 }
 
 function updateCockpit(dt) {
-  // Re-aim forward from the seat when idle; allow glancing around while dragging.
-  if (recenter || !interacting) {
+  if (recenter) {
+    // Smoothly ease the whole rig into the cockpit on entry / after C.
     camera.position.lerp(desiredCamPos, 1 - Math.exp(-16 * dt));
-    controls.target.copy(followTarget);
-    if (recenter && camera.position.distanceTo(desiredCamPos) < 0.4) recenter = false;
+    if (camera.position.distanceTo(desiredCamPos) < 0.4) recenter = false;
+    controls.target.copy(camera.position).addScaledVector(cockpitLookDir, 9);
+  } else if (interacting) {
+    // Glancing around: keep the rig RIDING WITH the aircraft by shifting the
+    // camera and its look target by however far the cockpit moved this frame, so
+    // the helicopter can't fly out from under a held look. The user's rotation
+    // (applied by controls.update below) is preserved on top of that.
+    camDelta.copy(desiredCamPos).sub(prevCockpitEye);
+    camera.position.add(camDelta);
+    controls.target.add(camDelta);
+  } else {
+    // Idle: track horizontally with no lag, DAMP the vertical so pitch swing,
+    // hover bob and altitude jolts are absorbed, then aim along the stabilized
+    // look direction from wherever the camera actually is.
+    camera.position.x = desiredCamPos.x;
+    camera.position.z = desiredCamPos.z;
+    camera.position.y = THREE.MathUtils.damp(camera.position.y, desiredCamPos.y, cockpitVertLambda, dt);
+    controls.target.copy(camera.position).addScaledVector(cockpitLookDir, 9);
   }
+  prevCockpitEye.copy(desiredCamPos);
   controls.update();
 }
 
@@ -1255,7 +1378,7 @@ function updateCinematic(dt) {
 }
 
 function updateCamera(dt) {
-  computeFraming(cameraMode);
+  computeFraming(cameraMode, dt);
   resolveFollowTarget(cameraMode);
   if (cameraMode === 'chase') updateChase(dt);
   else if (cameraMode === 'orbit') updateOrbit(dt);
@@ -1666,10 +1789,18 @@ function updateHud(now) {
     ? `LANDED · ${helicopter.destName}`
     : `${helicopter.phase} → ${helicopter.destName}`;
 
+  // Prominent touchdown readout for hand-flown landings (and auto parks).
+  const landed = helicopter.landed;
+  if (landed !== lastLandedShown) {
+    document.body.classList.toggle('heli-landed', landed);
+    lastLandedShown = landed;
+  }
+
   const pct = helicopter.progress01 * 100;
   routeFill.style.width = `${pct}%`;
   routeHeli.style.left = `${pct}%`;
 }
+let lastLandedShown = false;
 
 function updateStats(now) {
   if (!rendererStats || now - lastStatsMs < 250) return;
@@ -1737,7 +1868,8 @@ syncWeaponOverlay();
 syncSpeedometer();
 controls.enabled = true;
 requestRecenter();
-// If the user has marked a preset as default, load it now so the app starts in
-// that exact menu state (overriding the last-used per-control values).
-loadDefaultPreset();
 animate();
+// Pull the durable presets off disk (if the dev server is serving them), then
+// apply the default preset so the app starts in that exact menu state. If the
+// server isn't reachable, fall back to whatever localStorage already holds.
+hydratePresetsFromServer().finally(loadDefaultPreset);

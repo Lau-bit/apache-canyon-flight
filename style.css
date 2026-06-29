@@ -2,6 +2,26 @@
 html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0c0e; }
 canvas { display: block; }
 
+/* ---- Touchdown indicator: shown only while the aircraft is set down ---- */
+#landed-indicator {
+  position: fixed;
+  left: 50%;
+  top: 18%;
+  transform: translateX(-50%);
+  z-index: 6;
+  pointer-events: none;
+  display: none;
+  padding: 6px 16px;
+  border: 1px solid rgba(120, 230, 150, 0.55);
+  border-radius: 6px;
+  background: rgba(8, 20, 12, 0.55);
+  color: #87ff9f;
+  font: 700 16px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.18em;
+  text-shadow: 0 0 10px rgba(80, 220, 120, 0.6);
+}
+body.heli-landed #landed-indicator { display: block; }
+
 /* ---- Tactical HUD (top-left) ---- */
 #hud {
   position: fixed;

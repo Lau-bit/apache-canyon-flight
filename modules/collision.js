@@ -21,6 +21,29 @@ export class CollisionWorld {
     this.heightFn = heightFn;
     this.statics = [];
     this.units = [];
+    // Landing pads: flat circular surfaces (helipads, decks) the aircraft rests
+    // ON rather than passing through. Each carries the world-Y the helicopter's
+    // origin sits at when set down on it.
+    this.pads = [];
+  }
+
+  // Register a landing pad: a circle of radius `r` centred on (x, z) whose
+  // resting height (helicopter origin Y when touched down) is `restY`.
+  addPad(x, z, r, restY) {
+    this.pads.push({ x, z, r, restY });
+    return this;
+  }
+
+  // The highest pad rest-height under (x, z), or -Infinity if over no pad. The
+  // flight model raises its floor to this so the craft lands on the pad surface.
+  padRestHeight(x, z) {
+    let best = -Infinity;
+    for (const p of this.pads) {
+      const dx = x - p.x;
+      const dz = z - p.z;
+      if (dx * dx + dz * dz <= p.r * p.r && p.restY > best) best = p.restY;
+    }
+    return best;
   }
 
   // Add an upright cylinder collider. `bottom`/`top` default to an effectively

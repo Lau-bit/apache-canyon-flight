@@ -8,6 +8,14 @@ const OLIVE_DARK = 0x5c6541;
 const GUNMETAL = 0x565b57;
 const GLASS = 0x10201c;
 
+// Real Apaches carry a slight FORWARD tilt on the main rotor shaft. The whole
+// mast assembly (mast, hub, blades, mast-top radome) is tilted by this, pivoting
+// about the shaft base, and the flight model's parked nose-up settle is matched
+// to it (parkPitch = -ROTOR_FORWARD_TILT) so the disc reads level on the ground.
+export const ROTOR_FORWARD_TILT = 0.052; // rad (~3deg)
+const MAST_BASE_Y = 1.35; // shaft-base pivot height in model space
+const MAST_BASE_Z = -0.3; // shaft sits a touch aft of centre
+
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
     color,
@@ -201,14 +209,19 @@ function buildApache() {
   const stab = box(3.2, 0.16, 1.0, oliveMat, 0, 0.42, -8.0);
   group.add(stab);
 
-  // --- Main rotor ---
-  const mast = cyl(0.18, 0.22, 0.8, 10, metalMat, 0, 1.75, -0.3);
-  group.add(mast);
-  const hub = cyl(0.45, 0.45, 0.35, 10, metalMat, 0, 2.1, -0.3);
-  group.add(hub);
+  // --- Main rotor + mast assembly ---
+  // The entire shaft is parented under mastAssembly, positioned at the shaft base
+  // and tilted forward, so the mast, hub, blades and the mast-top radome all lean
+  // together. Child Ys are measured from MAST_BASE_Y (the pivot), and Z from
+  // MAST_BASE_Z, so the group's transform places everything correctly.
+  const mastAssembly = new THREE.Group();
+  const mast = cyl(0.18, 0.22, 0.8, 10, metalMat, 0, 1.75 - MAST_BASE_Y, 0);
+  mastAssembly.add(mast);
+  const hub = cyl(0.45, 0.45, 0.35, 10, metalMat, 0, 2.1 - MAST_BASE_Y, 0);
+  mastAssembly.add(hub);
 
   const mainRotor = new THREE.Group();
-  mainRotor.position.set(0, 2.2, -0.3);
+  mainRotor.position.set(0, 2.2 - MAST_BASE_Y, 0);
   const bladeMat = new THREE.MeshStandardMaterial({ color: 0x1d2022, roughness: 0.7, metalness: 0.1, transparent: true, opacity: 1 });
   for (let i = 0; i < 4; i++) {
     const bladeGroup = new THREE.Group();
@@ -220,15 +233,15 @@ function buildApache() {
     bladeGroup.add(tip);
     mainRotor.add(bladeGroup);
   }
-  group.add(mainRotor);
+  mastAssembly.add(mainRotor);
 
   const mainBlur = new THREE.Mesh(
     new THREE.CircleGeometry(7.0, 40),
     new THREE.MeshBasicMaterial({ color: 0x9aa0a4, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })
   );
   mainBlur.rotation.x = -Math.PI / 2;
-  mainBlur.position.set(0, 2.25, -0.3);
-  group.add(mainBlur);
+  mainBlur.position.set(0, 2.25 - MAST_BASE_Y, 0);
+  mastAssembly.add(mainBlur);
 
   // --- Tail rotor (left side of fin, spins about X) ---
   const tailRotor = new THREE.Group();
@@ -260,11 +273,13 @@ function buildApache() {
     wheel.rotation.z = Math.PI / 2;
     group.add(wheel);
   }
-  // Tail wheel: strut runs from the underside of the boom down to the wheel so
-  // it's actually attached rather than floating below the airframe.
-  const tailStrut = cyl(0.05, 0.05, 0.8, 6, metalMat, 0, -0.2, -7.6);
+  // Tail wheel: a taildragger leg right at the aft end of the boom, raked back
+  // and stretched well down so the aircraft can sit on it. With the parked
+  // nose-up settle it touches the deck at the same height as the main wheels.
+  const tailStrut = cyl(0.05, 0.06, 1.5, 6, metalMat, 0, -0.45, -8.9);
+  tailStrut.rotation.x = 0.2; // lean the leg aft
   group.add(tailStrut);
-  const tailWheel = cyl(0.22, 0.22, 0.2, 10, blackMat, 0, -0.6, -7.6);
+  const tailWheel = cyl(0.22, 0.22, 0.2, 10, blackMat, 0, -1.1, -9.05);
   tailWheel.rotation.z = Math.PI / 2;
   group.add(tailWheel);
 
@@ -274,29 +289,34 @@ function buildApache() {
   // airframe group and does NOT spin with the blades. (Replaces the old top
   // navigation strobe that used to occupy this spot.)
   const radarMat = new THREE.MeshStandardMaterial({ color: 0x23262a, roughness: 0.82, metalness: 0.2 });
-  const radomeY = 2.82;
-  const radarPylon = cyl(0.1, 0.13, 0.55, 8, metalMat, 0, 2.52, -0.3);
-  group.add(radarPylon);
+  const radomeY = 2.82 - MAST_BASE_Y; // local to the shaft assembly
+  const radarPylon = cyl(0.1, 0.13, 0.55, 8, metalMat, 0, 2.52 - MAST_BASE_Y, 0);
+  mastAssembly.add(radarPylon);
   // Flared mast collar under the radome: a frustum wider at the top (where it
   // meets the drum) than at its base, so the mount splays out toward the radome.
-  const radarCollar = cyl(0.36, 0.15, 0.34, 16, metalMat, 0, 2.47, -0.3);
-  group.add(radarCollar);
+  const radarCollar = cyl(0.36, 0.15, 0.34, 16, metalMat, 0, 2.47 - MAST_BASE_Y, 0);
+  mastAssembly.add(radarCollar);
   // Drum body + two flattened domed caps give the rounded-edge radome look.
   // Kept squat (half the old height) so it reads as the real Longbow's flat
   // drum — wider than it is tall.
-  const radomeBody = cyl(0.54, 0.54, 0.17, 22, radarMat, 0, radomeY, -0.3);
-  group.add(radomeBody);
+  const radomeBody = cyl(0.54, 0.54, 0.17, 22, radarMat, 0, radomeY, 0);
+  mastAssembly.add(radomeBody);
   const radomeTop = new THREE.Mesh(
     new THREE.SphereGeometry(0.54, 22, 10, 0, Math.PI * 2, 0, Math.PI / 2), radarMat);
   radomeTop.scale.set(1, 0.275, 1);
-  radomeTop.position.set(0, radomeY + 0.085, -0.3);
+  radomeTop.position.set(0, radomeY + 0.085, 0);
   radomeTop.castShadow = true;
-  group.add(radomeTop);
+  mastAssembly.add(radomeTop);
   const radomeBot = new THREE.Mesh(
     new THREE.SphereGeometry(0.54, 22, 10, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), radarMat);
   radomeBot.scale.set(1, 0.275, 1);
-  radomeBot.position.set(0, radomeY - 0.085, -0.3);
-  group.add(radomeBot);
+  radomeBot.position.set(0, radomeY - 0.085, 0);
+  mastAssembly.add(radomeBot);
+
+  // Seat the assembly at the shaft base and lean the whole thing forward.
+  mastAssembly.position.set(0, MAST_BASE_Y, MAST_BASE_Z);
+  mastAssembly.rotation.x = ROTOR_FORWARD_TILT;
+  group.add(mastAssembly);
 
   // Red anticollision beacon, relocated to the top of the tail boom now that the
   // mast carries the radome (the real aircraft keeps a beacon back here too).
@@ -390,9 +410,18 @@ export class Helicopter {
     this._landFromZ = 0;
 
     // Optional collision world (set per scene). When present, the airframe is
-    // pushed out of the level's static obstacles each frame.
+    // pushed out of the level's static obstacles each frame, and rests on top of
+    // landing pads instead of sinking through them.
     this.collisionWorld = null;
     this.bodyRadius = 3.5;
+    this.groundClearance = 2.4; // min hover height of the origin above bare ground
+
+    // True when the aircraft is settled on a surface (pad or ground): used to
+    // show a LANDED readout and to still the idle sway/bob. Drives gameplay later.
+    this.landed = false;
+    // Resting fuselage pitch (nose-up) when parked, chosen so the forward-tilted
+    // rotor disc reads level on the ground and the tail wheel sits down.
+    this.parkPitch = -ROTOR_FORWARD_TILT;
 
     // --- Manual flight (experimental) ---
     this.manualControl = false;
@@ -428,6 +457,23 @@ export class Helicopter {
 
   setColliders(world) {
     this.collisionWorld = world || null;
+  }
+
+  // First-person view: hide the airframe from the camera while still casting its
+  // shadow. We stop the materials writing colour AND depth (so nothing draws and
+  // nothing occludes the forward view), but leave castShadow on — the shadow map
+  // renders from a separate depth material, so the silhouette still lands on the
+  // ground. Originals are stashed so it restores exactly.
+  setSelfRendered(on) {
+    this.group.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (m.userData._cw === undefined) { m.userData._cw = m.colorWrite; m.userData._dw = m.depthWrite; }
+        m.colorWrite = on ? m.userData._cw : false;
+        m.depthWrite = on ? m.userData._dw : false;
+      }
+    });
   }
 
   setAutoLoop(on) {
@@ -583,6 +629,13 @@ export class Helicopter {
     } else {
       pitchTarget = inFwd * this.manualMaxTilt * this.pitchSensitivity;
     }
+    // Baseline nose-up so the forward-tilted rotor disc hangs LEVEL while hovering
+    // (the airframe sits slightly nose-high under the disc, like the real one);
+    // cyclic pitch is layered on top of it.
+    pitchTarget += this.parkPitch;
+    // Once set down, hold exactly that parked attitude regardless of cyclic input
+    // (`landed` reflects the previous frame, which is fine for a damped target).
+    if (this.landed) pitchTarget = this.parkPitch;
     this.pitch = damp(this.pitch, pitchTarget, this.pitchLambda, dt);
 
     // Collective → vertical rate. Climbing shares the forward "stickiness" so the
@@ -603,8 +656,12 @@ export class Helicopter {
     p.y += this._mvel.y * dt;
     p.z += this._mvel.z * dt;
 
-    // Keep clear of terrain/sea, and below a soft ceiling.
-    const minY = this.heightFn(p.x, p.z) + 2.4;
+    // Floor: stay above bare ground by the hover clearance, but rest ON any
+    // landing pad under us (its rest height wins) so we touch down on the deck
+    // instead of sinking through it.
+    let minY = this.heightFn(p.x, p.z) + this.groundClearance;
+    const padY = this.collisionWorld?.padRestHeight(p.x, p.z) ?? -Infinity;
+    if (padY > minY) minY = padY;
     if (p.y < minY) { p.y = minY; if (this._mvel.y < 0) this._mvel.y = 0; }
     if (p.y > 320) { p.y = 320; if (this._mvel.y > 0) this._mvel.y = 0; }
 
@@ -616,6 +673,14 @@ export class Helicopter {
     this.vel = this.currentSpeed;
     this._prevPosY = p.y;
     this._prevSpeed = this.currentSpeed;
+
+    // Landed: settled on the floor (within a hair), barely moving in any axis,
+    // and not commanding a climb. Stays latched while sat there.
+    const onFloor = p.y <= minY + 0.06;
+    this.landed = onFloor
+      && Math.abs(this._mvel.y) < 0.5
+      && this.currentSpeed < 2.5
+      && (k.collective || 0) <= 0;
   }
 
   get destName() {
@@ -791,9 +856,10 @@ export class Helicopter {
     if (this.manualControl) {
       this._updateManual(dt);
       // Idle hover drift: a vertical bob plus a slow lateral sway (off the up/down
-      // axis), both fading out as the aircraft picks up speed.
+      // axis), both fading out as the aircraft picks up speed — and stilled
+      // entirely once set down, so a landed aircraft sits dead still.
       this.bobPhase += dt * 1.6;
-      const hoverFade = 1 - THREE.MathUtils.smoothstep(this.currentSpeed, 5, 34);
+      const hoverFade = this.landed ? 0 : 1 - THREE.MathUtils.smoothstep(this.currentSpeed, 5, 34);
       this.group.position.copy(this._posTarget);
       this.group.position.x += Math.sin(this.bobPhase * 0.9) * this.hoverHoriz * hoverFade;
       this.group.position.y += Math.sin(this.bobPhase * 1.3) * this.hoverVert * hoverFade;
@@ -804,6 +870,8 @@ export class Helicopter {
     }
 
     this._updateFlight(dt);
+    // Auto mode: landed only when the state machine has parked on a pad.
+    this.landed = this.phase === 'LANDED';
 
     // --- Heading with inertia (rate-limited, smoothed angular velocity) ---
     const yawErr = shortestAngle(this.yaw, this._desiredYaw);
@@ -838,12 +906,14 @@ export class Helicopter {
     const forwardLean = this.maxLean * leanCurve;
     const climbUp = -THREE.MathUtils.clamp(Math.max(this._vy, 0) * 0.02, 0, 0.1);
     const flare = this.phase === 'LAND' ? -0.09 : 0;
-    const pitchTarget = (forwardLean + accelPitch + climbUp + flare) * this.pitchSensitivity;
+    // Same baseline nose-up as hand-flown mode: neutral attitude holds the rotor
+    // disc level, with airspeed lean / flare layered on top.
+    const pitchTarget = (forwardLean + accelPitch + climbUp + flare) * this.pitchSensitivity + this.parkPitch;
     this.pitch = damp(this.pitch, pitchTarget, this.pitchLambda, dt);
 
-    // Subtle hover bob (fades out with speed) + faint rotor shimmer.
+    // Subtle hover bob (fades out with speed, off once parked) + rotor shimmer.
     this.bobPhase += dt * 1.6;
-    const bob = Math.sin(this.bobPhase * 1.3) * this.hoverVert * (1 - leanCurve);
+    const bob = this.landed ? 0 : Math.sin(this.bobPhase * 1.3) * this.hoverVert * (1 - leanCurve);
     const shimmer = Math.sin(t * 52) * 0.0016 * this.rotorRpm;
 
     this.group.position.copy(this._posTarget);

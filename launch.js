@@ -8,6 +8,9 @@ const { exec } = require('child_process');
 
 const PORT = 8771;
 const ROOT = __dirname;
+// Presets are persisted to disk here so they survive browser localStorage wipes,
+// different browser instances, and dev restarts — only removed when overwritten.
+const PRESETS_FILE = path.join(ROOT, '.presets.json');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -30,6 +33,36 @@ function openBrowser(url) {
 
 const server = http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
+
+  // ---- Presets persistence API ----
+  if (url === '/api/presets') {
+    if (req.method === 'GET') {
+      fs.readFile(PRESETS_FILE, 'utf8', (err, data) => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(err ? '{}' : data);
+      });
+      return;
+    }
+    if (req.method === 'PUT' || req.method === 'POST') {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > 1e6) req.destroy(); // guard against runaway payloads
+      });
+      req.on('end', () => {
+        try { JSON.parse(body); } catch { res.writeHead(400); res.end('Bad JSON'); return; }
+        fs.writeFile(PRESETS_FILE, body, (err) => {
+          if (err) { res.writeHead(500); res.end('Write failed'); return; }
+          res.writeHead(200); res.end('OK');
+        });
+      });
+      return;
+    }
+    res.writeHead(405);
+    res.end('Method not allowed');
+    return;
+  }
+
   const rel = url === '/' ? '/index.html' : url;
   const filePath = path.normalize(path.join(ROOT, rel));
 

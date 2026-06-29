@@ -162,6 +162,11 @@ export const SCENES = [
       });
     },
     cameraStartX: SEA.baseAx,
+    // Carrier deck / island top sit at y=0; keep the existing rest height (the
+    // sea-deck touchdown tuning is out of scope for the land-pad work).
+    landingPads() {
+      return this.basePlacements().map((p) => ({ x: p.x, z: p.z, r: 14, restY: 4.6 }));
+    },
     // Bright, hazy maritime light with a far, soft horizon.
     tuneLighting(L) {
       L.fog.near = Math.max(L.fog.near, 320);
@@ -174,6 +179,22 @@ export const SCENES = [
     },
   },
 ];
+
+// Manual touchdown height (helicopter origin) on a land helipad: enough that the
+// main wheels rest ON the raised pad (top ~3.2) rather than sinking through it,
+// with the parked nose-up settle bringing the tail wheel down too. This only
+// feeds the hand-flown floor; auto-land keeps its own PAD_REST_Y for now.
+const LAND_PAD_REST_Y = 5.0;
+
+// Every scene's helipads sit at its base placements. Expose them as circular
+// landing-pad surfaces (centre + radius + rest height) the flight model can rest
+// the helicopter on, so it touches down on the deck instead of sinking through.
+for (const s of SCENES) {
+  if (s.landingPads) continue;
+  s.landingPads = function landingPads() {
+    return this.basePlacements().map((p) => ({ x: p.x, z: p.z, r: 14, restY: LAND_PAD_REST_Y }));
+  };
+}
 
 export function getScene(id) {
   return SCENES.find((s) => s.id === id) ?? SCENES[0];
