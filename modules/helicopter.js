@@ -416,6 +416,14 @@ export class Helicopter {
     this.bodyRadius = 3.5;
     this.groundClearance = 2.4; // min hover height of the origin above bare ground
 
+    // --- Combat health (basic damage model) ---
+    // maxHealth is driven by the dev "Helicopter health" slider; current health
+    // is depleted by enemy fire and refilled on respawn. `dead` latches at 0 so
+    // the level can play a destroyed beat before healing back for more testing.
+    this.maxHealth = 100;
+    this.health = 100;
+    this.dead = false;
+
     // True when the aircraft is settled on a surface (pad or ground): used to
     // show a LANDED readout and to still the idle sway/bob. Drives gameplay later.
     this.landed = false;
@@ -453,6 +461,33 @@ export class Helicopter {
 
   setCruiseSpeed(v) {
     this.cruiseSpeed = THREE.MathUtils.clamp(Number(v) || 0, 0, 60);
+  }
+
+  // Set the maximum health (dev slider). Refills to full by default; passing
+  // refill=false preserves the current damage ratio while rescaling.
+  setMaxHealth(v, refill = true) {
+    const max = Math.max(1, Number(v) || 1);
+    const ratio = this.maxHealth > 0 ? this.health / this.maxHealth : 1;
+    this.maxHealth = max;
+    this.health = refill ? max : THREE.MathUtils.clamp(ratio * max, 0, max);
+    this.dead = this.health <= 0;
+  }
+
+  resetHealth() {
+    this.health = this.maxHealth;
+    this.dead = false;
+  }
+
+  // Apply incoming damage. Returns true if this hit just destroyed the aircraft.
+  takeDamage(amount) {
+    if (this.dead || !(amount > 0)) return false;
+    this.health = Math.max(0, this.health - amount);
+    if (this.health <= 0) { this.dead = true; return true; }
+    return false;
+  }
+
+  get healthFraction() {
+    return this.maxHealth > 0 ? THREE.MathUtils.clamp(this.health / this.maxHealth, 0, 1) : 0;
   }
 
   setColliders(world) {

@@ -21,6 +21,10 @@
   <div class="hud-row"><span class="hud-key">ALT AGL</span><span class="hud-val" id="hud-alt">0</span><span class="hud-unit">ft</span></div>
   <div class="hud-row"><span class="hud-key">HEADING</span><span class="hud-val" id="hud-hdg">000</span><span class="hud-unit">deg</span></div>
   <div class="hud-row"><span class="hud-key">RANGE</span><span class="hud-val" id="hud-range">0.0</span><span class="hud-unit">nm</span></div>
+  <div id="hud-health">
+    <div class="hud-health-head"><span class="hud-key">INTEGRITY</span><span id="hud-health-text">100/100</span></div>
+    <div class="hud-health-track"><div id="hud-health-fill"></div></div>
+  </div>
   <div id="phase">STANDBY</div>
 </div>
 
@@ -32,8 +36,10 @@
   </div>
 </div>
 
+<div id="damage-flash" aria-hidden="true"></div>
 <div id="reticle"></div>
 <div id="landed-indicator" aria-hidden="true">● LANDED</div>
+<div id="destroyed-indicator" aria-hidden="true">● AIRFRAME DESTROYED</div>
 <div id="speedometer" aria-hidden="true"><span id="speedometer-val">0</span><span class="speedometer-unit">kt</span></div>
 <div id="weapon-crosshair"></div>
 <div id="hitmarker" aria-hidden="true">
@@ -123,6 +129,52 @@
       <label>
         <input id="speedometer-toggle" type="checkbox" name="speedometer">
         Speedometer <span class="tag">stays UI-off</span>
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Combat</legend>
+      <p class="dev-note">Enemies aim at predicted points in space; the helicopter takes damage from rounds that connect. The helipad areas are safe zones — no enemy fires while you sit there.</p>
+      <label>
+        <input id="enemy-health-bars" type="checkbox" name="enemy-health-bars">
+        Enemy health bars
+      </label>
+      <label class="range-label" for="heli-health">
+        <span>Helicopter health <output id="heli-health-value" for="heli-health">100</output> <span class="tag">dev</span></span>
+        <input id="heli-health" type="range" min="20" max="1000" step="10" value="100">
+      </label>
+      <p class="dev-note">Firing frequency per enemy type — ammo expended per minute (0 = hold fire). Each type keeps its own burst pattern.</p>
+      <label class="range-label" for="rate-turret">
+        <span>AA turret rate <output id="rate-turret-value" for="rate-turret">80</output>/min</span>
+        <input id="rate-turret" type="range" min="0" max="300" step="5" value="80">
+      </label>
+      <label class="range-label" for="rate-tank">
+        <span>Tank rate <output id="rate-tank-value" for="rate-tank">16</output>/min</span>
+        <input id="rate-tank" type="range" min="0" max="120" step="2" value="16">
+      </label>
+      <label class="range-label" for="rate-tower">
+        <span>Watchtower MG rate <output id="rate-tower-value" for="rate-tower">190</output>/min</span>
+        <input id="rate-tower" type="range" min="0" max="600" step="10" value="190">
+      </label>
+      <label class="range-label" for="rate-bunker">
+        <span>Bunker rate <output id="rate-bunker-value" for="rate-bunker">190</output>/min</span>
+        <input id="rate-bunker" type="range" min="0" max="600" step="10" value="190">
+      </label>
+      <p class="dev-note">Projectile speed per enemy type (m/s) — lower is easier to read and dodge.</p>
+      <label class="range-label" for="speed-turret">
+        <span>AA turret speed <output id="speed-turret-value" for="speed-turret">210</output> m/s</span>
+        <input id="speed-turret" type="range" min="60" max="360" step="5" value="210">
+      </label>
+      <label class="range-label" for="speed-tank">
+        <span>Tank speed <output id="speed-tank-value" for="speed-tank">155</output> m/s</span>
+        <input id="speed-tank" type="range" min="60" max="360" step="5" value="155">
+      </label>
+      <label class="range-label" for="speed-tower">
+        <span>Watchtower MG speed <output id="speed-tower-value" for="speed-tower">235</output> m/s</span>
+        <input id="speed-tower" type="range" min="60" max="360" step="5" value="235">
+      </label>
+      <label class="range-label" for="speed-bunker">
+        <span>Bunker speed <output id="speed-bunker-value" for="speed-bunker">220</output> m/s</span>
+        <input id="speed-bunker" type="range" min="60" max="360" step="5" value="220">
       </label>
     </fieldset>
     <fieldset>

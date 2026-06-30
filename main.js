@@ -300,12 +300,21 @@ function buildWorld(detail) {
   helicopter.setManualControl(manualControl);
   helicopter.setColliders(playerCollision);
   helicopter.setSelfRendered(cameraMode !== 'cockpit');
+  helicopter.setMaxHealth(heliMaxHealth);
   applyDevPhysics();
   worldRoot.add(helicopter.group);
+  prevHeliPos.copy(helicopter.group.position);
+  document.body.classList.remove('heli-destroyed');
+  heliDestroyedTimer = 0;
+  damageFlash = 0;
+  damageFlashEl.style.opacity = '0';
 
   buildCinematicStations();
   applyLabelVisibility();
   collectDestructiblePlanes();
+  updateHeliHealthHud();
+  applyFireRates();
+  applyFireSpeeds();
 }
 
 // Full teardown + rebuild when switching scenes.
@@ -330,7 +339,7 @@ function setScene(id) {
   buildWorld(sceneDetail);
   applyTimeOfDay(timeKey); // scene-specific lighting tweak
   applyShadowQuality();
-  requestRecenter();
+  frameSceneStart();
 }
 
 // ----------------------------------------------------------------- state ------
@@ -359,6 +368,24 @@ let fpvCameraAngle = THREE.MathUtils.clamp(num(window.localStorage.getItem(lsKey
 let weaponOverlay = window.localStorage.getItem(lsKey('weaponOverlay')) === 'true';
 let weaponAimLift = num(window.localStorage.getItem(lsKey('weaponAimLift')), 14);
 let showSpeedometer = window.localStorage.getItem(lsKey('speedometer')) === 'true';
+// Combat: optional floating enemy health bars + a dev slider for the
+// helicopter's max health (saved with everything else, for testing damage values).
+let showHealthBars = window.localStorage.getItem(lsKey('healthBars')) === 'true';
+// `num(null, d)` collapses to 0 (Number(null) is a finite 0), so guard the
+// unset case explicitly to keep the intended 100 HP default on a fresh profile.
+let heliMaxHealth = num(window.localStorage.getItem(lsKey('heliHealth')) ?? 100, 100);
+// Per-enemy-type firing frequency, in ammo expended per minute (drives the
+// assault level's shooters; defaults reproduce the hand-tuned cadence).
+let fireRateTurret = num(window.localStorage.getItem(lsKey('rpmTurret')) ?? 80, 80);
+let fireRateTank = num(window.localStorage.getItem(lsKey('rpmTank')) ?? 16, 16);
+let fireRateTower = num(window.localStorage.getItem(lsKey('rpmTower')) ?? 190, 190);
+let fireRateBunker = num(window.localStorage.getItem(lsKey('rpmBunker')) ?? 190, 190);
+// Per-enemy-type projectile speed (m/s); defaults are a touch slower than the
+// originals so rounds are easier to read and dodge.
+let fireSpeedTurret = num(window.localStorage.getItem(lsKey('spdTurret')) ?? 210, 210);
+let fireSpeedTank = num(window.localStorage.getItem(lsKey('spdTank')) ?? 155, 155);
+let fireSpeedTower = num(window.localStorage.getItem(lsKey('spdTower')) ?? 235, 235);
+let fireSpeedBunker = num(window.localStorage.getItem(lsKey('spdBunker')) ?? 220, 220);
 
 // Dev physics: visual bank/pitch tuning. Defaults reproduce the current
 // hand-tuned look; inertia values are settle-time constants (seconds), so the
@@ -431,16 +458,81 @@ function collectDestructiblePlanes() {
     if (!cfg) return;
     cfg.hits = cfg.hits ?? 0;
     cfg.destroyed = Boolean(cfg.destroyed);
-    destructiblePlanes.push({
+    const center = cfg.center?.clone?.() ?? new THREE.Vector3();
+    const radius = cfg.radius ?? 5;
+    const target = {
       object: obj,
-      center: cfg.center?.clone?.() ?? new THREE.Vector3(),
-      radius: cfg.radius ?? 5,
+      center,
+      radius,
       maxHits: cfg.hp ?? 5,
       hits: cfg.hits,
       destroyed: cfg.destroyed,
       burnTimer: 0,
-    });
+      healthBar: null,
+    };
+    // Floating health bar, parented above the target so it tracks it (and, for
+    // tanks, moves with them). Billboarded; only drawn when the toggle is on.
+    const bar = makeHealthBarSprite();
+    const w = THREE.MathUtils.clamp(radius * 1.3 + 3, 4.5, 9);
+    bar.sprite.scale.set(w, w / 6, 1);
+    bar.sprite.position.set(center.x, center.y + radius + 2.4, center.z);
+    obj.add(bar.sprite);
+    target.healthBar = bar;
+    destructiblePlanes.push(target);
+    refreshHealthBar(target);
   });
+}
+
+// --- Enemy health bars ------------------------------------------------------
+// A small canvas-textured sprite per target. Cheap to keep around; the texture
+// is only redrawn when a target's health changes (on a hit), not every frame.
+function makeHealthBarSprite() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 96;
+  canvas.height = 16;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: true, depthWrite: false,
+  }));
+  sprite.renderOrder = 20;
+  sprite.visible = false;
+  return { sprite, canvas, ctx: canvas.getContext('2d'), tex };
+}
+
+function drawHealthBar(bar, frac) {
+  const { ctx, canvas, tex } = bar;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
+  ctx.fillRect(0, 0, w, h);
+  const fill = Math.max(0, Math.round((w - 4) * frac));
+  ctx.fillStyle = `hsl(${Math.round(120 * frac)}, 85%, 48%)`;
+  ctx.fillRect(2, 2, fill, h - 4);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+  ctx.strokeRect(1, 1, w - 2, h - 2);
+  tex.needsUpdate = true;
+}
+
+// Redraw + show/hide a target's bar to match its current state + the toggle.
+function refreshHealthBar(target) {
+  const bar = target.healthBar;
+  if (!bar) return;
+  if (target.destroyed) { bar.sprite.visible = false; return; }
+  drawHealthBar(bar, 1 - target.hits / target.maxHits);
+  bar.sprite.visible = showHealthBars;
+}
+
+function applyHealthBarVisibility() {
+  for (const t of destructiblePlanes) refreshHealthBar(t);
+}
+
+// Push the dev-slider max health onto the (rebuildable) helicopter + refresh HUD.
+function applyHeliHealth() {
+  helicopter?.setMaxHealth(heliMaxHealth);
+  updateHeliHealthHud();
 }
 
 function applyRenderQuality() {
@@ -636,6 +728,89 @@ speedometerInput.addEventListener('change', () => {
   window.localStorage.setItem(lsKey('speedometer'), String(showSpeedometer));
   syncSpeedometer();
 });
+
+const healthBarsInput = $('enemy-health-bars');
+healthBarsInput.checked = showHealthBars;
+healthBarsInput.addEventListener('change', () => {
+  showHealthBars = healthBarsInput.checked;
+  window.localStorage.setItem(lsKey('healthBars'), String(showHealthBars));
+  applyHealthBarVisibility();
+});
+
+const heliHealthInput = $('heli-health');
+const heliHealthValue = $('heli-health-value');
+heliMaxHealth = THREE.MathUtils.clamp(heliMaxHealth, Number(heliHealthInput.min), Number(heliHealthInput.max));
+heliHealthInput.value = String(heliMaxHealth);
+heliHealthValue.textContent = String(heliMaxHealth);
+heliHealthInput.addEventListener('input', () => {
+  heliMaxHealth = THREE.MathUtils.clamp(num(heliHealthInput.value, 100), Number(heliHealthInput.min), Number(heliHealthInput.max));
+  heliHealthValue.textContent = String(heliMaxHealth);
+  window.localStorage.setItem(lsKey('heliHealth'), String(heliMaxHealth));
+  applyHeliHealth();
+});
+
+// Per-enemy-type firing frequency (ammo/min). Each control owns one enemy type;
+// the live value is pushed onto the active assault world via applyFireRates().
+const fireRateControls = [
+  { id: 'rate-turret', type: 'turret', key: 'rpmTurret', def: 80, get: () => fireRateTurret, set: (v) => { fireRateTurret = v; } },
+  { id: 'rate-tank', type: 'tank', key: 'rpmTank', def: 16, get: () => fireRateTank, set: (v) => { fireRateTank = v; } },
+  { id: 'rate-tower', type: 'tower', key: 'rpmTower', def: 190, get: () => fireRateTower, set: (v) => { fireRateTower = v; } },
+  { id: 'rate-bunker', type: 'bunker', key: 'rpmBunker', def: 190, get: () => fireRateBunker, set: (v) => { fireRateBunker = v; } },
+];
+for (const rc of fireRateControls) {
+  rc.input = $(rc.id);
+  rc.output = $(`${rc.id}-value`);
+  let v = THREE.MathUtils.clamp(rc.get(), Number(rc.input.min), Number(rc.input.max));
+  rc.set(v);
+  rc.input.value = String(v);
+  rc.output.textContent = String(v);
+  rc.input.addEventListener('input', () => {
+    v = THREE.MathUtils.clamp(num(rc.input.value, rc.def), Number(rc.input.min), Number(rc.input.max));
+    rc.set(v);
+    rc.output.textContent = String(v);
+    window.localStorage.setItem(lsKey(rc.key), String(v));
+    applyFireRates();
+  });
+}
+
+function applyFireRates() {
+  if (!sceneWorld?.setFireRate) return;
+  sceneWorld.setFireRate('turret', fireRateTurret);
+  sceneWorld.setFireRate('tank', fireRateTank);
+  sceneWorld.setFireRate('tower', fireRateTower);
+  sceneWorld.setFireRate('bunker', fireRateBunker);
+}
+
+// Per-enemy-type projectile speed (ammo/min's sibling). Same wiring pattern.
+const fireSpeedControls = [
+  { id: 'speed-turret', type: 'turret', key: 'spdTurret', def: 210, get: () => fireSpeedTurret, set: (v) => { fireSpeedTurret = v; } },
+  { id: 'speed-tank', type: 'tank', key: 'spdTank', def: 155, get: () => fireSpeedTank, set: (v) => { fireSpeedTank = v; } },
+  { id: 'speed-tower', type: 'tower', key: 'spdTower', def: 235, get: () => fireSpeedTower, set: (v) => { fireSpeedTower = v; } },
+  { id: 'speed-bunker', type: 'bunker', key: 'spdBunker', def: 220, get: () => fireSpeedBunker, set: (v) => { fireSpeedBunker = v; } },
+];
+for (const sc of fireSpeedControls) {
+  sc.input = $(sc.id);
+  sc.output = $(`${sc.id}-value`);
+  let v = THREE.MathUtils.clamp(sc.get(), Number(sc.input.min), Number(sc.input.max));
+  sc.set(v);
+  sc.input.value = String(v);
+  sc.output.textContent = String(v);
+  sc.input.addEventListener('input', () => {
+    v = THREE.MathUtils.clamp(num(sc.input.value, sc.def), Number(sc.input.min), Number(sc.input.max));
+    sc.set(v);
+    sc.output.textContent = String(v);
+    window.localStorage.setItem(lsKey(sc.key), String(v));
+    applyFireSpeeds();
+  });
+}
+
+function applyFireSpeeds() {
+  if (!sceneWorld?.setProjectileSpeed) return;
+  sceneWorld.setProjectileSpeed('turret', fireSpeedTurret);
+  sceneWorld.setProjectileSpeed('tank', fireSpeedTank);
+  sceneWorld.setProjectileSpeed('tower', fireSpeedTower);
+  sceneWorld.setProjectileSpeed('bunker', fireSpeedBunker);
+}
 
 const statsInput = $('renderer-stats');
 const statsPanel = document.createElement('div');
@@ -996,6 +1171,9 @@ const hudRange = $('hud-range');
 const phaseEl = $('phase');
 const routeFill = $('route-fill');
 const routeHeli = $('route-heli');
+const hudHealthFill = $('hud-health-fill');
+const hudHealthText = $('hud-health-text');
+const damageFlashEl = $('damage-flash');
 
 // ------------------------------------------------------------- keyboard -------
 const orbitPanKeys = new Set();
@@ -1108,6 +1286,11 @@ const prevCockpitEye = new THREE.Vector3();
 
 let interacting = false; // a mouse button / wheel drag is active
 let recenter = true;
+// "Free start": a scene begins framed on the base but NOT locked onto the
+// aircraft — the chase cam holds the establishing angle/zoom and only tracks the
+// heli's translation, so the pilot can pan and fly freely. Cleared by a recenter
+// (C / mode switch) or by grabbing the camera.
+let freeStart = false;
 let chaseTurnExtraLead = 0;
 let chaseYawHoldTime = 0;
 let lastChaseYawInput = 0;
@@ -1130,10 +1313,27 @@ function dampAngle(cur, target, lambda, dt) {
 
 function requestRecenter() {
   recenter = true;
+  freeStart = false;
   cameraPanOffset.set(0, 0, 0);
   lookOnlyAnchorActive = false;
 }
-controls.addEventListener('start', () => { interacting = true; });
+
+// Establish a scene's opening view: an overview of the active base, free to pan,
+// without the forced recenter/zoom onto the aircraft. The chase cam then holds
+// this framing (see freeStart) until the pilot recenters or grabs the camera.
+function frameSceneStart() {
+  if (!helicopter) return;
+  freeStart = true;
+  recenter = false;
+  lookOnlyAnchorActive = false;
+  cameraPanOffset.set(0, 0, 0);
+  const p = helicopter.group.position;
+  controls.target.copy(p).addScaledVector(worldUp, 1.6);
+  const nose = new THREE.Vector3(Math.sin(helicopter.yaw), 0, Math.cos(helicopter.yaw));
+  camera.position.copy(p).addScaledVector(nose, -chaseDefaultRadius * 1.4).addScaledVector(worldUp, 12);
+  controls.update();
+}
+controls.addEventListener('start', () => { interacting = true; freeStart = false; });
 controls.addEventListener('end', () => { interacting = false; });
 
 function hasDirectionalFlightInput() {
@@ -1252,7 +1452,11 @@ function updateChase(dt) {
     const preTurnTheta = sph.theta;
     // Lead the nose slightly on arrow-yaw. Holding the turn adds a little more
     // lead slowly, so the view anticipates sustained turns without snapping.
-    if (yawInput) {
+    if (freeStart) {
+      // Free scene start: hold the established angle/zoom — only the translation
+      // tracking above keeps the heli framed. No auto pull-behind until the pilot
+      // recenters (C) or grabs the camera.
+    } else if (yawInput) {
       // Ease the azimuth response IN over a fresh press: the rate starts SLOW
       // (so quick taps read as fine nudges) and rises to the normal turn rate —
       // it NEVER goes above it, so the effect only ever slows the camera. Using
@@ -1645,6 +1849,7 @@ function markPlaneDestroyed(target, pos) {
   });
   target.object.rotation.z += (Math.random() - 0.5) * 0.22;
   target.object.rotation.x += (Math.random() - 0.5) * 0.12;
+  if (target.healthBar) target.healthBar.sprite.visible = false;
   emitPlaneHitEffect(pos, 'explode');
 }
 
@@ -1655,6 +1860,7 @@ function damagePlane(target, pos) {
   triggerHitmarker();
   emitPlaneHitEffect(pos, 'hit');
   if (target.hits >= target.maxHits) markPlaneDestroyed(target, pos);
+  else refreshHealthBar(target);
 }
 
 function projectilePlaneHit(start, end) {
@@ -1771,6 +1977,88 @@ function updateWeapons(dt, t) {
   }
 }
 
+// ------------------------------------------------------------- combat ---------
+// The active gameplay level (assault) reports enemy fire to the player through
+// this hook: `pos` is the live airframe position, `vel` its world velocity (so
+// enemies can lead their shots), `radius` the hit sphere, and `damage` the call
+// a connecting round makes. `alive` gates hits while the wreck is respawning.
+const heliVel = new THREE.Vector3();
+const prevHeliPos = new THREE.Vector3();
+const playerHook = {
+  pos: new THREE.Vector3(),
+  vel: heliVel,
+  radius: 3.0,
+  alive: true,
+  damage: (amount, at) => damagePlayer(amount, at),
+};
+
+const HELI_RESPAWN_TIME = 3.0;
+let damageFlash = 0;        // 0..1 red-vignette intensity, decays each frame
+let heliDestroyedTimer = 0; // counts down the destroyed beat before respawn
+let heliBurnTick = 0;       // throttles wreck smoke while down
+
+// A light spark where a round hit the airframe — a few short-lived flecks, far
+// cheaper than the full impact burst so rapid MG fire doesn't flood the scene.
+function emitPlayerHitSpark(pos) {
+  for (let i = 0; i < 4; i++) {
+    const mat = flameBaseMat.clone();
+    const mesh = new THREE.Mesh(flameGeo, mat);
+    mesh.position.copy(pos);
+    mesh.scale.setScalar(0.18 + Math.random() * 0.22);
+    scene.add(mesh);
+    impactParticles.push({
+      mesh, mat, kind: 'impact', age: 0,
+      life: 0.12 + Math.random() * 0.12, grow: 1.4,
+      vel: new THREE.Vector3((Math.random() - 0.5) * 10, 2 + Math.random() * 6, (Math.random() - 0.5) * 10),
+    });
+  }
+}
+
+function damagePlayer(amount, atPos) {
+  if (!helicopter || helicopter.dead) return;
+  const destroyed = helicopter.takeDamage(amount);
+  damageFlash = Math.min(1, damageFlash + 0.25 + amount * 0.012);
+  if (atPos) emitPlayerHitSpark(atPos);
+  updateHeliHealthHud();
+  if (destroyed) onHeliDestroyed();
+}
+
+function onHeliDestroyed() {
+  heliDestroyedTimer = HELI_RESPAWN_TIME;
+  heliBurnTick = 0;
+  damageFlash = 1;
+  document.body.classList.add('heli-destroyed');
+  emitPlaneHitEffect(helicopter.group.position, 'explode');
+}
+
+function updateCombat(dt) {
+  if (damageFlash > 0) {
+    damageFlash = Math.max(0, damageFlash - dt * 1.6);
+    damageFlashEl.style.opacity = String(damageFlash * 0.5);
+  }
+  if (heliDestroyedTimer > 0) {
+    heliDestroyedTimer -= dt;
+    heliBurnTick -= dt;
+    if (heliBurnTick <= 0) {
+      emitPlaneHitEffect(helicopter.group.position, 'burn');
+      heliBurnTick = 0.16;
+    }
+    if (heliDestroyedTimer <= 0) {
+      helicopter.resetHealth();
+      document.body.classList.remove('heli-destroyed');
+      updateHeliHealthHud();
+    }
+  }
+}
+
+function updateHeliHealthHud() {
+  if (!helicopter || !hudHealthFill) return;
+  const frac = helicopter.healthFraction;
+  hudHealthFill.style.width = `${Math.round(frac * 100)}%`;
+  hudHealthFill.style.background = `hsl(${Math.round(120 * frac)}, 85%, 46%)`;
+  hudHealthText.textContent = `${Math.ceil(helicopter.health)}/${Math.round(helicopter.maxHealth)}`;
+}
+
 // ------------------------------------------------------------- HUD update -----
 let lastHudMs = 0;
 function updateHud(now) {
@@ -1833,11 +2121,17 @@ function animate(now = 0) {
   if (manualControl) helicopter.manualInput = manualInputFromKeys();
   helicopter.update(dt, t);
 
-  // Drive the active gameplay level (enemy column, tracking turrets, tracers).
-  sceneWorld?.update(dt, t, helicopter.group.position);
+  // World velocity of the airframe this frame, so enemies can lead their fire.
+  const heliPos = helicopter.group.position;
+  heliVel.copy(heliPos).sub(prevHeliPos).divideScalar(Math.max(dt, 1e-3));
+  prevHeliPos.copy(heliPos);
+  playerHook.pos.copy(heliPos);
+  playerHook.alive = !helicopter.dead;
+
+  // Drive the active gameplay level (enemy column, tracking turrets, aimed fire).
+  sceneWorld?.update(dt, t, heliPos, playerHook);
 
   // Sun + shadow follow the helicopter.
-  const heliPos = helicopter.group.position;
   sun.target.position.copy(heliPos);
   sun.position.copy(heliPos).addScaledVector(sunDir, 240);
   sunSprite.position.copy(camera.position).addScaledVector(sunDir, 1400);
@@ -1848,6 +2142,7 @@ function animate(now = 0) {
 
   updateCamera(dt);
   updateWeapons(dt, t);
+  updateCombat(dt);
 
   updateCulling();
   updateHud(now);
@@ -1867,7 +2162,7 @@ document.body.classList.toggle('manual-control', manualControl);
 syncWeaponOverlay();
 syncSpeedometer();
 controls.enabled = true;
-requestRecenter();
+frameSceneStart();
 animate();
 // Pull the durable presets off disk (if the dev server is serving them), then
 // apply the default preset so the app starts in that exact menu state. If the

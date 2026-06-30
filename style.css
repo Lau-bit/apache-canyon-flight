@@ -22,6 +22,39 @@ canvas { display: block; }
 }
 body.heli-landed #landed-indicator { display: block; }
 
+/* ---- Damage feedback: red screen vignette pulsed on each hit ---- */
+#damage-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at center,
+    rgba(180, 0, 0, 0) 40%,
+    rgba(200, 10, 10, 0.55) 100%);
+  transition: opacity 0.08s linear;
+}
+
+/* ---- Airframe destroyed banner (shown during the respawn beat) ---- */
+#destroyed-indicator {
+  position: fixed;
+  left: 50%;
+  top: 30%;
+  transform: translateX(-50%);
+  z-index: 8;
+  pointer-events: none;
+  display: none;
+  padding: 8px 20px;
+  border: 1px solid rgba(255, 90, 70, 0.7);
+  border-radius: 6px;
+  background: rgba(28, 8, 6, 0.6);
+  color: #ff8a72;
+  font: 700 18px/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: 0.18em;
+  text-shadow: 0 0 12px rgba(255, 80, 50, 0.7);
+}
+body.heli-destroyed #destroyed-indicator { display: block; }
+
 /* ---- Tactical HUD (top-left) ---- */
 #hud {
   position: fixed;
@@ -77,6 +110,41 @@ body.heli-landed #landed-indicator { display: block; }
   color: #c8ffd4;
   font-size: 11px;
   letter-spacing: 0.14em;
+}
+
+/* ---- Airframe integrity (health) bar in the HUD ---- */
+#hud-health {
+  margin-top: 10px;
+  width: 160px;
+}
+
+#hud-health .hud-health-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+#hud-health #hud-health-text {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #d8ffe0;
+}
+
+.hud-health-track {
+  height: 7px;
+  border: 1px solid rgba(120, 200, 150, 0.45);
+  border-radius: 4px;
+  background: rgba(8, 18, 12, 0.6);
+  overflow: hidden;
+}
+
+#hud-health-fill {
+  height: 100%;
+  width: 100%;
+  background: hsl(120, 85%, 46%);
+  transition: width 0.12s linear, background 0.2s linear;
 }
 
 /* ---- Route progress (top-center) ---- */

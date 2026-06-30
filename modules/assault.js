@@ -36,6 +36,69 @@ function mats() {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+// Smallest signed delta from angle a to angle b (radians), wrapped to (-pi, pi].
+function angDelta(a, b) {
+  return ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
+
+// ---------------------------------------------------------------------------
+// Enemy fire patterns. Each enemy type aims at a PREDICTED point in 3D space
+// (target position led by its velocity) with a per-shot spread cone, then fires
+// a dumb tracer toward that fixed point. The round does NOT home on the
+// helicopter, so a jinking pilot can be missed — the enemy is shooting at where
+// it thinks you'll be, not at you.
+//
+// The OVERALL rate is driven by a per-type "rounds per minute" budget (the
+// Combat sliders), but each type keeps its own SHAPE of fire: bursts, burst
+// spacing, spread, lead, speed and damage. Salvo spacing is derived from the
+// rpm so that (burst rounds) * (salvos per minute) = the requested rpm.
+//   type     : key into the live per-type rpm table
+//   range    : max engagement distance (m)
+//   burst    : rounds per salvo; burstGap : seconds between them
+//   lead     : 0..1+ how much target velocity is led (1 = full intercept guess)
+//   spread   : base aim scatter (m); cone : extra scatter per metre of range
+//   speed    : tracer speed (m/s); damage : hp per hit on the helicopter
+//   color/size/radius : tracer look (size = length scale, radius = thickness m)
+// ---------------------------------------------------------------------------
+const FIRE = {
+  turret: {
+    type: 'turret', range: 330, burst: 2, burstGap: 0.13,
+    lead: 0.85, spread: 1.8, cone: 0.012, speed: 210, damage: 5,
+    color: 0xffcaa0, size: 3.0, radius: 0.12,
+  },
+  tank: {
+    type: 'tank', range: 380, burst: 1, burstGap: 0,
+    lead: 1.0, spread: 1.4, cone: 0.005, speed: 155, damage: 22,
+    color: 0xffe07a, size: 5.0, radius: 0.26,
+  },
+  tower: {
+    type: 'tower', range: 235, burst: 7, burstGap: 0.09,
+    lead: 0.5, spread: 4.5, cone: 0.03, speed: 235, damage: 2,
+    color: 0xfff0b0, size: 2.3, radius: 0.09,
+  },
+  bunker: {
+    type: 'bunker', range: 300, burst: 3, burstGap: 0.11,
+    lead: 0.8, spread: 1.1, cone: 0.008, speed: 220, damage: 6,
+    color: 0xffd2a0, size: 3.2, radius: 0.14,
+  },
+};
+
+// Default rounds-per-minute per type, chosen so the derived salvo spacing
+// reproduces the hand-tuned cadence above. The live values live on the world
+// returned by buildAssault and are driven by the Combat sliders.
+const DEFAULT_RPM = { turret: 80, tank: 16, tower: 190, bunker: 190 };
+
+// Default tracer speed (m/s) per type — a touch slower than before so rounds
+// are a little easier to read and dodge. Live values are driven by the Combat
+// "projectile speed" sliders through setProjectileSpeed.
+const DEFAULT_SPEED = { turret: 210, tank: 155, tower: 235, bunker: 220 };
+
+// Fresh fire-control state for a shooter (desynced first salvo so a line of
+// emplacements doesn't volley in lockstep).
+function makeFireState() {
+  return { fireTimer: 0.3 + Math.random() * 2, burstLeft: 0, burstTimer: 0 };
+}
+
 // Mark a group as a destructible target the weapon system can find + destroy.
 // `center` is a local-space point; `radius` the hit sphere; `hp` shots to kill.
 function destructible(group, { hp, radius, center }) {
@@ -304,9 +367,17 @@ function makeTank(M) {
   const cupola = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.6, 10), M.oliveDk);
   cupola.position.set(-1.0, 0.9, 0.6);
   turretPivot.add(cupola);
+  // Muzzle flash at the gun's mouth (pulsed on fire). The tank's forward is +X,
+  // so the gun and its flash sit out along +X from the turret pivot.
+  const flashMat = new THREE.MeshBasicMaterial({
+    color: 0xffe6a0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const flash = new THREE.Mesh(new THREE.SphereGeometry(0.8, 8, 6), flashMat);
+  flash.position.set(5.9, 0.1, 0);
+  turretPivot.add(flash);
 
   destructible(group, { hp: 6, radius: 4.2, center: new THREE.Vector3(0, 2, 0) });
-  return { group, turretPivot };
+  return { group, turretPivot, flashMat };
 }
 
 // --- Level assembly ---------------------------------------------------------
@@ -331,12 +402,46 @@ export function buildAssault(root) {
   ]);
   beacons.push(...endpoints.beacons);
 
+  // Safe zones: a generous bubble around each helipad. While the helicopter is
+  // inside one, no enemy fires at it — the bases and their approaches stay
+  // calm so the player can stage, rearm mentally, and take off unharassed.
+  const SAFE_RADIUS = 90;
+  const safeZones = [
+    { x: WORLD.baseAx, z: canyonCenterZ(WORLD.baseAx), r: SAFE_RADIUS },
+    { x: WORLD.baseBx, z: canyonCenterZ(WORLD.baseBx), r: SAFE_RADIUS },
+  ];
+  function playerInSafeZone(pos) {
+    for (const s of safeZones) {
+      const dx = pos.x - s.x;
+      const dz = pos.z - s.z;
+      if (dx * dx + dz * dz <= s.r * s.r) return true;
+    }
+    return false;
+  }
+
+  // Live rounds-per-minute budget per enemy type (driven by the Combat sliders
+  // through setFireRate). Salvo spacing is derived from these each time a shooter
+  // schedules its next salvo, so a slider change takes effect within one cycle.
+  const rates = { ...DEFAULT_RPM };
+  function setFireRate(type, rpm) {
+    if (type in rates && Number.isFinite(rpm)) rates[type] = Math.max(0, rpm);
+  }
+
+  // Live tracer speed (m/s) per type, driven by the Combat projectile-speed
+  // sliders. Clamped to a sane floor so the lead-time maths never blows up.
+  const speeds = { ...DEFAULT_SPEED };
+  function setProjectileSpeed(type, v) {
+    if (type in speeds && Number.isFinite(v)) speeds[type] = Math.max(30, v);
+  }
+
   const installations = new THREE.Group();
   installations.name = 'AssaultInstallations';
   root.add(installations);
 
   const turrets = [];
   const tanks = [];
+  // Fixed emplacements that fire from a static muzzle (watchtowers, bunker).
+  const gunners = [];
 
   // Convenience: drop a turret on the floor + register a (short) collider.
   function addTurret(x, zOff) {
@@ -345,7 +450,7 @@ export function buildAssault(root) {
     installations.add(tur.group);
     const wp = tur.group.position;
     collision.addCylinder(wp.x, wp.z, 3.2, -1e6, wp.y + 4.0);
-    turrets.push({ ...tur, dead: false, fireTimer: 1 + Math.random() * 2 });
+    turrets.push({ ...tur, dead: false, fire: makeFireState() });
     return tur;
   }
   function addStructureCollider(group, radius, height) {
@@ -353,12 +458,16 @@ export function buildAssault(root) {
     collision.addCylinder(wp.x, wp.z, radius, -1e6, wp.y + height);
   }
 
-  // Watchtowers guarding the approaches.
+  // Watchtowers guarding the approaches — each cabin mounts a machine gun.
   for (const [x, zOff] of [[-150, -20], [40, 22], [200, -22]]) {
     const tw = makeWatchtower(M);
     placeOnFloor(tw.group, x, zOff);
     installations.add(tw.group);
     addStructureCollider(tw.group, 4.5, 18);
+    gunners.push({
+      group: tw.group, pattern: FIRE.tower, fire: makeFireState(),
+      localMuzzle: new THREE.Vector3(1.6, 15, 2.6),
+    });
   }
 
   // Anti-air turret line down the corridor.
@@ -368,13 +477,17 @@ export function buildAssault(root) {
   addTurret(150, -18);
   addTurret(225, 16);
 
-  // Bunker.
+  // Bunker — an autocannon fires from the firing slit.
   {
     const bk = makeBunker(M);
     placeOnFloor(bk.group, -30, -14);
     bk.group.rotation.y = -0.4; // face the firing slit up-canyon
     installations.add(bk.group);
     addStructureCollider(bk.group, 6.5, 6);
+    gunners.push({
+      group: bk.group, pattern: FIRE.bunker, fire: makeFireState(),
+      localMuzzle: new THREE.Vector3(0, 2.8, 4.4),
+    });
   }
 
   // Captured airfield: hangar + parked strike jets on the apron.
@@ -427,46 +540,131 @@ export function buildAssault(root) {
       radius: 3.2,
       dead: false,
     });
-    tanks.push({ ...tk, unit, dead: false, speed: 5.5 + Math.random() * 2, yaw: Math.PI });
+    tanks.push({ ...tk, unit, dead: false, speed: 5.5 + Math.random() * 2, yaw: Math.PI, fire: makeFireState() });
   }
 
   // --- Enemy fire (tracers) ---------------------------------------------------
+  // A tracer is a dumb straight-line round fired toward a fixed world point that
+  // the shooter computed as its best guess of where the helicopter will be. It
+  // never re-aims, so the pilot can fly out of its path. Each round carries the
+  // damage it deals if its travel segment passes through the player hit sphere.
   const fxGroup = new THREE.Group();
   fxGroup.name = 'AssaultFx';
   root.add(fxGroup);
   const tracerGeo = new THREE.CylinderGeometry(0.12, 0.12, 2.4, 6);
   tracerGeo.rotateX(Math.PI / 2); // lie along +Z
-  const tracerMat = new THREE.MeshBasicMaterial({
-    color: 0xffcaa0, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
-  });
+  // One additive material per tracer colour (so each enemy type reads distinct).
+  const tracerMats = new Map();
+  function tracerMat(color) {
+    let m = tracerMats.get(color);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      tracerMats.set(color, m);
+    }
+    return m;
+  }
   const tracers = [];
   const _muzzle = new THREE.Vector3();
   const _dir = new THREE.Vector3();
-  const _q = new THREE.Quaternion();
+  const _aim = new THREE.Vector3();
+  const _rand = new THREE.Vector3();
+  const _prev = new THREE.Vector3();
+  const _seg = new THREE.Vector3();
+  const _toC = new THREE.Vector3();
+  const _hit = new THREE.Vector3();
   const _up = new THREE.Vector3(0, 0, 1);
 
-  function fireTracer(fromWorld, toWorld) {
-    if (tracers.length > 60) return;
-    const mesh = new THREE.Mesh(tracerGeo, tracerMat);
+  // Pick the world point a shooter aims at: lead the target by its velocity over
+  // the round's flight time, then scatter it inside a range-dependent cone.
+  function computeAimPoint(muzzle, targetPos, targetVel, p, out) {
+    out.copy(targetPos);
+    if (targetVel) {
+      const lead = muzzle.distanceTo(targetPos) / (speeds[p.type] ?? p.speed);
+      out.addScaledVector(targetVel, lead * p.lead);
+    }
+    const scatter = p.spread + muzzle.distanceTo(out) * p.cone;
+    _rand.set(Math.random() * 2 - 1, (Math.random() * 2 - 1) * 0.7, Math.random() * 2 - 1);
+    out.addScaledVector(_rand, scatter);
+    return out;
+  }
+
+  function spawnTracer(fromWorld, toWorld, p) {
+    if (tracers.length > 90) return;
+    const speed = speeds[p.type] ?? p.speed;
+    const mesh = new THREE.Mesh(tracerGeo, tracerMat(p.color));
     mesh.position.copy(fromWorld);
     _dir.copy(toWorld).sub(fromWorld);
     const dist = _dir.length() || 1;
     _dir.divideScalar(dist);
     mesh.quaternion.setFromUnitVectors(_up, _dir);
-    mesh.scale.z = 3;
+    const rscale = (p.radius ?? 0.12) / 0.12;
+    mesh.scale.set(rscale, rscale, p.size ?? 3);
     fxGroup.add(mesh);
-    tracers.push({ mesh, vel: _dir.clone().multiplyScalar(220), life: clamp(dist / 220, 0.15, 0.9), age: 0 });
+    // Let it overshoot the aim point a touch so a target that flew INTO the
+    // predicted spot still gets caught; cap it so misses die off in the distance.
+    const travel = Math.min(dist + 70, p.range + 90);
+    tracers.push({
+      mesh, vel: _dir.clone().multiplyScalar(speed), damage: p.damage,
+      life: clamp(travel / speed, 0.2, 1.6), age: 0,
+    });
+  }
+
+  // Seconds until a shooter's next salvo, derived from its live rounds-per-minute
+  // budget so that burst*salvosPerMinute == rpm. A little ±25% jitter desyncs
+  // emplacements. rpm 0 = held fire: re-poll periodically (cheap) so turning the
+  // slider back up resumes firing without a rebuild.
+  function nextSalvoTimer(p) {
+    const rpm = rates[p.type] ?? 0;
+    if (rpm <= 0) return 0.5;
+    const avg = (60 * p.burst) / rpm; // seconds between salvos
+    return Math.max(0.1, avg * (0.75 + Math.random() * 0.5));
+  }
+
+  // Run one shooter's fire control for the frame. When the salvo timer expires
+  // and the target is in range it opens a burst (firing the first round at once),
+  // then spaces the rest by burstGap. Returns true on any frame a round leaves
+  // the muzzle, so callers can pulse a flash.
+  function tickFire(state, p, dt, muzzle, targetPos, targetVel, inRange) {
+    let fired = false;
+    if (state.burstLeft > 0) {
+      state.burstTimer -= dt;
+      while (state.burstLeft > 0 && state.burstTimer <= 0) {
+        spawnTracer(muzzle, computeAimPoint(muzzle, targetPos, targetVel, p, _aim), p);
+        fired = true;
+        state.burstLeft -= 1;
+        state.burstTimer += p.burstGap;
+      }
+    } else {
+      state.fireTimer -= dt;
+      if (state.fireTimer <= 0) {
+        if (inRange && (rates[p.type] ?? 0) > 0) {
+          spawnTracer(muzzle, computeAimPoint(muzzle, targetPos, targetVel, p, _aim), p);
+          fired = true;
+          state.burstLeft = p.burst - 1;
+          state.burstTimer = p.burstGap;
+        }
+        state.fireTimer = nextSalvoTimer(p);
+      }
+    }
+    return fired;
   }
 
   // --- Per-frame level update -------------------------------------------------
+  // `player` (optional) carries the helicopter hit sphere + a damage callback:
+  //   { pos: Vector3, vel: Vector3, radius: number, alive: bool, damage(n, at) }
   const _world = new THREE.Vector3();
-  const _flatToPlayer = new THREE.Vector3();
 
-  function update(dt, t, playerPos) {
+  function update(dt, t, playerPos, player) {
+    const targetVel = player?.vel ?? null;
+    // While the helicopter sits in a helipad safe zone, every enemy holds fire.
+    const playerSafe = playerInSafeZone(playerPos);
+
     // Spin the HQ radar.
     if (turrets._radar) turrets._radar.rotation.y += dt * 0.8;
 
-    // Turrets: detect destruction, track the player, fire bursts.
+    // Turrets: detect destruction, track the player, fire snappy AA bursts.
     for (const tur of turrets) {
       if (!tur || !tur.group) continue;
       if (!tur.dead && tur.group.userData.destructiblePlane?.destroyed) {
@@ -482,23 +680,30 @@ export function buildAssault(root) {
       const dy = playerPos.y - (_world.y + 1.7);
       const horiz = Math.hypot(dx, dz);
       const yaw = Math.atan2(dx, dz);
-      tur.headPivot.rotation.y += ((yaw - tur.headPivot.rotation.y + Math.PI * 3) % (Math.PI * 2) - Math.PI) * Math.min(1, dt * 2.5);
+      tur.headPivot.rotation.y += angDelta(tur.headPivot.rotation.y, yaw) * Math.min(1, dt * 2.5);
       const pitch = -clamp(Math.atan2(dy, horiz), -0.2, 1.0);
       tur.barrelPivot.rotation.x += (pitch - tur.barrelPivot.rotation.x) * Math.min(1, dt * 2.5);
 
       // Fade the muzzle flash.
       if (tur.flashMat.opacity > 0) tur.flashMat.opacity = Math.max(0, tur.flashMat.opacity - dt * 6);
 
-      // Fire when roughly aimed and the player is in range.
-      tur.fireTimer -= dt;
-      const aimed = Math.abs(((yaw - tur.headPivot.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < 0.25;
-      if (tur.fireTimer <= 0 && horiz < 320 && aimed) {
-        tur.fireTimer = 0.9 + Math.random() * 1.4;
+      tur.barrelPivot.getWorldPosition(_muzzle);
+      _muzzle.y += 0.6;
+      const aimed = Math.abs(angDelta(tur.headPivot.rotation.y, yaw)) < 0.25;
+      const inRange = !playerSafe && horiz < FIRE.turret.range && aimed;
+      if (tickFire(tur.fire, FIRE.turret, dt, _muzzle, playerPos, targetVel, inRange)) {
         tur.flashMat.opacity = 1;
-        tur.barrelPivot.getWorldPosition(_muzzle);
-        _muzzle.y += 0.6;
-        fireTracer(_muzzle, playerPos);
       }
+    }
+
+    // Fixed gun emplacements (watchtowers, bunker): fire from a static muzzle
+    // whenever the player is inside their (type-specific) reach.
+    for (const g of gunners) {
+      if (g.group.userData.destructiblePlane?.destroyed) continue;
+      g.group.updateWorldMatrix(true, false);
+      g.group.localToWorld(_muzzle.copy(g.localMuzzle));
+      const inRange = !playerSafe && _muzzle.distanceTo(playerPos) < g.pattern.range;
+      tickFire(g.fire, g.pattern, dt, _muzzle, playerPos, targetVel, inRange);
     }
 
     // Tank column advances down-canyon, staying on the floor + clear of things.
@@ -524,27 +729,68 @@ export function buildAssault(root) {
       if (u.pos.x < WORLD.baseAx + 40) u.pos.x = WORLD.baseBx - 40;
 
       collision.resolveStatics(u.pos, u.radius);
-      tk.yaw = Math.atan2(desiredVx, desiredVz);
+      // The hull's forward axis is +X (glacis + gun), so steer that axis onto the
+      // travel direction — atan2(-vz, vx) for a +X-forward model. (The old
+      // atan2(vx, vz) was the +Z-forward convention, which drove the tank
+      // sideways, crabbing down the canyon with its flank leading.)
+      tk.yaw = Math.atan2(-desiredVz, desiredVx);
     }
     collision.separateUnits();
 
-    // Commit unit positions to the tank groups (sit on the terrain, face travel).
+    // Commit unit positions to the tank groups (sit on the terrain, face travel),
+    // aim the turret, and fire slow heavy shells.
     for (const tk of tanks) {
+      if (tk.flashMat.opacity > 0) tk.flashMat.opacity = Math.max(0, tk.flashMat.opacity - dt * 6);
       if (tk.dead) continue;
       const u = tk.unit;
       tk.group.position.set(u.pos.x, terrainHeight(u.pos.x, u.pos.z), u.pos.z);
       tk.group.rotation.y = tk.yaw;
-      // Tank turret tracks the player.
+
+      // Turret tracks the player. Both hull and turret are +X-forward, so the
+      // world heading to the player is atan2(-dz, dx); the turret's LOCAL yaw is
+      // that minus the hull yaw it is parented under.
       tk.group.getWorldPosition(_world);
-      const yaw = Math.atan2(playerPos.x - _world.x, playerPos.z - _world.z) - tk.yaw;
-      tk.turretPivot.rotation.y += ((yaw - tk.turretPivot.rotation.y + Math.PI * 3) % (Math.PI * 2) - Math.PI) * Math.min(1, dt * 2);
+      const ax = playerPos.x - _world.x;
+      const az = playerPos.z - _world.z;
+      const worldAim = Math.atan2(-az, ax);
+      const localAim = worldAim - tk.yaw;
+      tk.turretPivot.rotation.y += angDelta(tk.turretPivot.rotation.y, localAim) * Math.min(1, dt * 2);
+
+      // Fire from the gun mouth when laid on and the player is in range. Refresh
+      // the turret's world matrix first so the muzzle reflects this frame's pose.
+      tk.turretPivot.updateWorldMatrix(true, false);
+      tk.turretPivot.localToWorld(_muzzle.set(5.9, 0.1, 0));
+      const turretWorldYaw = tk.yaw + tk.turretPivot.rotation.y;
+      const aimed = Math.abs(angDelta(turretWorldYaw, worldAim)) < 0.12;
+      const inRange = !playerSafe && Math.hypot(ax, az) < FIRE.tank.range && aimed;
+      if (tickFire(tk.fire, FIRE.tank, dt, _muzzle, playerPos, targetVel, inRange)) {
+        tk.flashMat.opacity = 1;
+      }
     }
 
-    // Advance + retire tracers.
+    // Advance tracers, test each against the player hit sphere, and retire them.
+    const pr = player?.radius ?? 0;
+    const canHit = player && player.alive !== false && pr > 0;
     for (let i = tracers.length - 1; i >= 0; i--) {
       const tr = tracers[i];
       tr.age += dt;
+      _prev.copy(tr.mesh.position);
       tr.mesh.position.addScaledVector(tr.vel, dt);
+
+      if (canHit) {
+        _seg.copy(tr.mesh.position).sub(_prev);
+        const lenSq = _seg.lengthSq() || 1e-6;
+        _toC.copy(playerPos).sub(_prev);
+        const s = clamp(_toC.dot(_seg) / lenSq, 0, 1);
+        _hit.copy(_prev).addScaledVector(_seg, s);
+        if (_hit.distanceToSquared(playerPos) <= pr * pr) {
+          player.damage(tr.damage, _hit);
+          fxGroup.remove(tr.mesh);
+          tracers.splice(i, 1);
+          continue;
+        }
+      }
+
       if (tr.age >= tr.life) {
         fxGroup.remove(tr.mesh);
         tracers.splice(i, 1);
@@ -552,7 +798,7 @@ export function buildAssault(root) {
     }
   }
 
-  return { beacons, world: { collision, update } };
+  return { beacons, world: { collision, update, setFireRate, setProjectileSpeed, safeZones } };
 }
 
 // Re-export terrain builder so the scene definition can stay declarative.
