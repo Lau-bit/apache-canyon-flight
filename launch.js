@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
-const PORT = 8771;
+const PORT = Number(process.env.PORT) || 8771;
 const ROOT = __dirname;
 // Presets are persisted to disk here so they survive browser localStorage wipes,
 // different browser instances, and dev restarts — only removed when overwritten.
@@ -91,7 +91,7 @@ server.on('error', (err) => {
   const url = `http://localhost:${PORT}`;
   if (err.code === 'EADDRINUSE') {
     console.log(`Port ${PORT} is already in use. Opening the existing server at ${url}`);
-    openBrowser(url);
+    if (!process.env.NO_OPEN) openBrowser(url);
     return;
   }
 
@@ -102,5 +102,5 @@ server.on('error', (err) => {
 server.listen(PORT, () => {
   const url = `http://localhost:${PORT}`;
   console.log(`Apache canyon flight running at ${url}`);
-  openBrowser(url);
+  if (!process.env.NO_OPEN) openBrowser(url);
 });
