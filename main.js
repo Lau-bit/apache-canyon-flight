@@ -6,7 +6,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 import { buildBases } from './modules/bases.js';
-import { Helicopter } from './modules/helicopter.js';
+import { Helicopter, HELI_MODELS, DEFAULT_HELI_MODEL, getHeliModel } from './modules/helicopter.js';
 import { SCENES, getScene } from './modules/scenes.js';
 import { CollisionWorld } from './modules/collision.js';
 import { PAD_REST_Y } from './modules/flightpath.js';
@@ -230,6 +230,9 @@ let destructiblePlanes = [];
 // A scene may return a live "world" (collision + per-frame enemy update) from
 // its base builder — currently the canyon-assault gameplay level.
 let sceneWorld = null;
+// Kept at module scope so the airframe can be swapped without rebuilding the
+// terrain, the bases or the enemy level around it.
+let playerCollision = null;
 
 function disposeGroup(root) {
   root.traverse((child) => {
@@ -289,12 +292,12 @@ function buildWorld(detail) {
   // Player collision: reuse the scene's own collision world if it has one (the
   // assault level's structures), otherwise spin up a fresh one. Either way,
   // register this scene's landing pads so the helicopter rests on them.
-  const playerCollision = sceneWorld?.collision ?? new CollisionWorld(currentScene.height);
+  playerCollision = sceneWorld?.collision ?? new CollisionWorld(currentScene.height);
   for (const pad of currentScene.landingPads?.() ?? []) {
     playerCollision.addPad(pad.x, pad.z, pad.r, pad.restY ?? PAD_REST_Y);
   }
 
-  helicopter = new Helicopter(path, currentScene.height);
+  helicopter = new Helicopter(path, currentScene.height, { model: heliModel });
   helicopter.setCruiseSpeed(cruiseSpeed);
   helicopter.setAutoLoop(autoLoop);
   helicopter.setManualControl(manualControl);
@@ -334,12 +337,60 @@ function setScene(id) {
   helicopter = null;
   destructiblePlanes = [];
   sceneWorld = null;
+  playerCollision = null;
 
   path = currentScene.makePath();
   buildWorld(sceneDetail);
   applyTimeOfDay(timeKey); // scene-specific lighting tweak
   applyShadowQuality();
   frameSceneStart();
+}
+
+// Swap the airframe model without touching the terrain, bases or enemy level:
+// the old group is removed and disposed, a new Helicopter is built from the
+// chosen model, and the flight state is carried across so the aircraft keeps
+// flying the leg it was on instead of teleporting back to the pad.
+const CARRIED_FLIGHT_STATE = [
+  'dist', 'dir', 'vel', 'currentSpeed', 'phase', 'holdTimer', 'liftT', 'landT',
+  'needTurn', 'yaw', 'yawVel', 'pitch', 'roll', '_bankSignal', 'landed',
+  'rotorRpm', 'rotorAngle', 'tailAngle', 'bobPhase', '_vy', '_prevSpeed',
+  '_accel', '_landFromX', '_landFromZ', '_prevPosY', '_desiredYaw',
+];
+
+function setHeliModel(id) {
+  const next = getHeliModel(id).id;
+  if (next === heliModel && helicopter?.modelId === next) return;
+  heliModel = next;
+  window.localStorage.setItem(lsKey('heliModel'), heliModel);
+  if (!helicopter) return;
+
+  const old = helicopter;
+  worldRoot.remove(old.group);
+
+  const fresh = new Helicopter(path, currentScene.height, { model: heliModel });
+  for (const k of CARRIED_FLIGHT_STATE) {
+    if (old[k] !== undefined) fresh[k] = old[k];
+  }
+  fresh._posTarget.copy(old._posTarget);
+  fresh._mvel.copy(old._mvel);
+  fresh.group.position.copy(old.group.position);
+  fresh.group.quaternion.copy(old.group.quaternion);
+
+  fresh.setCruiseSpeed(cruiseSpeed);
+  fresh.setAutoLoop(autoLoop);
+  fresh.setManualControl(manualControl);
+  fresh.setColliders(playerCollision);
+  fresh.setSelfRendered(cameraMode !== 'cockpit');
+  fresh.setMaxHealth(heliMaxHealth, false);
+  fresh.health = Math.min(old.health, fresh.maxHealth);
+  fresh.dead = old.dead;
+
+  helicopter = fresh;
+  applyDevPhysics();
+  worldRoot.add(helicopter.group);
+  prevHeliPos.copy(helicopter.group.position);
+  disposeGroup(old.group);
+  updateHeliHealthHud();
 }
 
 // ----------------------------------------------------------------- state ------
@@ -350,6 +401,9 @@ let cameraMode = window.localStorage.getItem(lsKey('camera')) || 'chase';
 let cruiseSpeed = num(window.localStorage.getItem(lsKey('cruise')), 28);
 let autoLoop = window.localStorage.getItem(lsKey('loop')) !== 'false';
 let timeKey = window.localStorage.getItem(lsKey('time')) || 'golden';
+// Which airframe model the aircraft is built from. New sessions get the default
+// registered in helicopter.js; a saved choice overrides it.
+let heliModel = getHeliModel(window.localStorage.getItem(lsKey('heliModel')) || DEFAULT_HELI_MODEL).id;
 let frameRateMode = window.localStorage.getItem(lsKey('fps')) || '60';
 let sceneDetail = window.localStorage.getItem(lsKey('detail')) || 'high';
 let shadowQuality = window.localStorage.getItem(lsKey('shadow')) || 'high';
@@ -612,6 +666,17 @@ fpvCameraAngleInput.addEventListener('input', () => {
 const sceneSelect = $('scene-select');
 sceneSelect.value = currentScene.id;
 sceneSelect.addEventListener('change', () => setScene(sceneSelect.value));
+
+const heliModelSelect = $('heli-model-select');
+for (const m of HELI_MODELS) {
+  const opt = document.createElement('option');
+  opt.value = m.id;
+  opt.textContent = m.label;
+  if (m.note) opt.title = m.note;
+  heliModelSelect.append(opt);
+}
+heliModelSelect.value = heliModel;
+heliModelSelect.addEventListener('change', () => setHeliModel(heliModelSelect.value));
 
 const routeSelect = $('route-select');
 routeSelect.value = timeKey;

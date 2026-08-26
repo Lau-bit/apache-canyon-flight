@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PAD_REST_Y } from './flightpath.js';
+import { buildAh64a } from './heli-model-ah64a.js';
 
 // Model convention: nose points +Z, up is +Y, tail boom runs to -Z.
 
@@ -325,7 +326,34 @@ function buildApache() {
   strobe.position.set(0, 1.05, -5.6);
   group.add(strobe);
 
-  return { group, mainRotor, tailRotor, mainBlur, tailBlur, bladeMat, tailBladeMat, strobeMat };
+  return { group, mainRotor, tailRotor, mainBlur, tailBlur, bladeMat, tailBladeMat, strobeMat, rotorTilt: ROTOR_FORWARD_TILT };
+}
+
+// ---- Airframe model registry ----
+// Each entry is a self-contained builder returning the same parts contract:
+// { group, mainRotor, tailRotor, mainBlur, tailBlur, bladeMat, tailBladeMat,
+//   strobeMat, rotorTilt }. Models are additive — adding one never touches an
+// existing one, and the flight model, cameras and weapons are shared by all of
+// them because every builder uses the same nose-+Z / 1-unit-per-metre layout.
+export const HELI_MODELS = [
+  {
+    id: 'ah64a-blueprint',
+    label: 'AH-64A (three-view)',
+    note: 'Lofted hull traced off the general-arrangement drawing. Scissor tail rotor, bare rotor head.',
+    build: buildAh64a,
+  },
+  {
+    id: 'apache-longbow',
+    label: 'AH-64D Longbow (original)',
+    note: 'The original box-built airframe, with the mast-mounted fire-control radome.',
+    build: buildApache,
+  },
+];
+
+export const DEFAULT_HELI_MODEL = HELI_MODELS[0].id;
+
+export function getHeliModel(id) {
+  return HELI_MODELS.find((m) => m.id === id) ?? HELI_MODELS[0];
 }
 
 function shortestAngle(from, to) {
@@ -345,10 +373,12 @@ function easeInOut(t) {
 }
 
 export class Helicopter {
-  constructor(path, heightFn = () => 0) {
+  constructor(path, heightFn = () => 0, opts = {}) {
     this.path = path;
     this.heightFn = heightFn;
-    const built = buildApache();
+    const model = getHeliModel(opts.model);
+    const built = model.build();
+    this.modelId = model.id;
     this.group = built.group;
     this.parts = built;
 
@@ -429,7 +459,9 @@ export class Helicopter {
     this.landed = false;
     // Resting fuselage pitch (nose-up) when parked, chosen so the forward-tilted
     // rotor disc reads level on the ground and the tail wheel sits down.
-    this.parkPitch = -ROTOR_FORWARD_TILT;
+    // Taken from the model that was actually built, so a model with a different
+    // shaft tilt still parks with its rotor disc reading level.
+    this.parkPitch = -(built.rotorTilt ?? ROTOR_FORWARD_TILT);
 
     // --- Manual flight (experimental) ---
     this.manualControl = false;
