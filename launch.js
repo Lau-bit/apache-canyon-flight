@@ -8,6 +8,13 @@ const { exec } = require('child_process');
 
 const PORT = Number(process.env.PORT) || 8771;
 const ROOT = __dirname;
+// Loopback only. `listen(PORT)` with no host binds every interface, which published
+// this folder to the LAN. The documented Quest/USB path uses `adb reverse`, so it
+// arrives here as a loopback connection and is unaffected by this.
+const HOST = '127.0.0.1';
+// The trailing separator is the whole point: `startsWith(ROOT)` alone is satisfied by
+// any sibling directory whose name merely EXTENDS this one's.
+const ROOT_PREFIX = ROOT + path.sep;
 // Presets are persisted to disk here so they survive browser localStorage wipes,
 // different browser instances, and dev restarts — only removed when overwritten.
 const PRESETS_FILE = path.join(ROOT, '.presets.json');
@@ -31,8 +38,27 @@ function openBrowser(url) {
   exec(opener);
 }
 
+// Error replies: a fixed body, never the requested path echoed back, and always with
+// an explicit type + nosniff so a reflected byte can never be sniffed as markup.
+function fail(res, code, msg) {
+  res.writeHead(code, {
+    'Content-Type': 'text/plain; charset=utf-8',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(msg);
+}
+
 const server = http.createServer((req, res) => {
-  const url = decodeURIComponent(req.url.split('?')[0]);
+  const rawPath = req.url.split('?')[0];
+  let url;
+  try {
+    // A lone `%` makes decodeURIComponent throw, and an uncaught throw in this
+    // handler takes the entire server process down.
+    url = decodeURIComponent(rawPath);
+  } catch {
+    fail(res, 400, 'Bad request');
+    return;
+  }
 
   // ---- Presets persistence API ----
   if (url === '/api/presets') {
@@ -66,21 +92,14 @@ const server = http.createServer((req, res) => {
   const rel = url === '/' ? '/index.html' : url;
   const filePath = path.normalize(path.join(ROOT, rel));
 
-  if (!filePath.startsWith(ROOT)) {
-    res.writeHead(403);
-    res.end('Forbidden');
-    return;
-  }
+  if (filePath !== ROOT && !filePath.startsWith(ROOT_PREFIX)) { fail(res, 403, 'Forbidden'); return; }
 
   fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      res.end('Not found: ' + rel);
-      return;
-    }
+    if (err) { fail(res, 404, 'Not found'); return; }
 
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(filePath)] || 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff',
       'Cache-Control': 'no-store',
     });
     res.end(data);
@@ -99,7 +118,7 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const url = `http://localhost:${PORT}`;
   console.log(`Apache canyon flight running at ${url}`);
   if (!process.env.NO_OPEN) openBrowser(url);
